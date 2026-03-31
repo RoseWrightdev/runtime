@@ -94,6 +94,7 @@ sequenceDiagram
     participant K as Kernel (OS)
 
     Note over W,T: Task Execution Level
+    activate W
     W->>+T: 1. poll()
     T-->>-W: 2. return Poll::Pending
     
@@ -110,10 +111,13 @@ sequenceDiagram
     R->>+T: 7. waker.wake()
     T->>W: 8. inject(task) into Scheduler
     deactivate T
+    deactivate R
     
     Note over W,T: Task Completion
+    activate W
     W->>+T: 9. poll() again
     T-->>-W: 10. return Poll::Ready(n)
+    deactivate W
 ```
 
 ## Implementation Details
