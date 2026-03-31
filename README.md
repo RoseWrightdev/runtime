@@ -62,9 +62,9 @@ Task coordination is handled via an `AtomicU8` state machine.
 stateDiagram-v2
     [*] --> SCHEDULED
     SCHEDULED --> POLLING
-    POLLING --> IDLE : "Poll::Pending"
-    POLLING --> COMPLETED : "Poll::Ready"
-    IDLE --> SCHEDULED : "Reactor Waker"
+    POLLING --> IDLE: Pending
+    POLLING --> COMPLETED: Ready
+    IDLE --> SCHEDULED: Reactor Waker
 ```
 
 ## Performance Data
@@ -88,7 +88,7 @@ The following sequence documents the interaction between components during an as
 
 ```mermaid
 sequenceDiagram
-    actor T as Task (Future)
+    participant T as Task (Future)
     participant W as Worker Thread
     participant R as Reactor Thread
     participant K as Kernel (OS)
