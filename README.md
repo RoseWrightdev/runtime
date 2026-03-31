@@ -6,31 +6,43 @@ Implementation of a work-stealing asynchronous executor and reactor.
 
 The system consists of a global scheduler, worker threads, and a single-threaded reactor.
 
-### 1. Component Overview
+
+### 1. Request Lifecycle
+
+The following sequence documents the interaction between components during an asynchronous I/O operation (e.g., `TcpStream::read`).
 
 ```mermaid
-graph TD
-    subgraph "Interface"
-        Spawn["spawn()"]
-        BlockOn["block_on()"]
-    end
+sequenceDiagram
+    participant T as Task (Future)
+    participant W as Worker Thread
+    participant R as Reactor Thread
+    participant K as Kernel (OS)
 
-    subgraph "Executor"
-        Scheduler["Global Injector Queue"]
-        W1["Worker Thread 1"]
-        Wn["Worker Thread N"]
-    end
+    Note over W,T: Task Execution Level
+    activate W
+    W->>+T: 1. poll()
+    T-->>-W: 2. return Poll::Pending
+    
+    Note over W,R: I/O Registration
+    W->>+R: 3. register(fd, waker)
+    W->>W: 4. park() or find next task
+    deactivate W
 
-    subgraph "Reactor"
-        Reg["Registration Queue (SegQueue)"]
-        Loop["Reactor Thread (epoll/kqueue)"]
-    end
-
-    Spawn --> Scheduler
-    Scheduler --> W1 & Wn
-    W1 & Wn -->|Register FDs| Reg
-    Reg --> Loop
-    Loop -.->|Wake| Scheduler
+    Note over R,K: Event Multiplexing (epoll/kqueue)
+    R->>+K: 5. wait(timeout)
+    K-->>-R: 6. Event Ready (FD)
+    
+    Note over R,T: Waker triggers re-scheduling
+    R->>+T: 7. waker.wake()
+    T->>W: 8. inject(task) into Scheduler
+    deactivate T
+    deactivate R
+    
+    Note over W,T: Task Completion
+    activate W
+    W->>+T: 9. poll() again
+    T-->>-W: 10. return Poll::Ready(n)
+    deactivate W
 ```
 
 ### 2. Task Scheduling
