@@ -62,9 +62,9 @@ Task coordination is handled via an `AtomicU8` state machine.
 stateDiagram-v2
     [*] --> SCHEDULED
     SCHEDULED --> POLLING
-    POLLING --> IDLE: Poll::Pending
-    POLLING --> COMPLETED: Poll::Ready
-    IDLE --> SCHEDULED: Reactor Waker
+    POLLING --> IDLE : "Poll::Pending"
+    POLLING --> COMPLETED : "Poll::Ready"
+    IDLE --> SCHEDULED : "Reactor Waker"
 ```
 
 ## Performance Data
