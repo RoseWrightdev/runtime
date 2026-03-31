@@ -88,21 +88,32 @@ The following sequence documents the interaction between components during an as
 
 ```mermaid
 sequenceDiagram
-    participant T as Task (Future)
+    actor T as Task (Future)
     participant W as Worker Thread
     participant R as Reactor Thread
-    participant K as Kernel (epoll/kqueue)
+    participant K as Kernel (OS)
 
-    W->>T: 1. poll()
-    T->>W: 2. return Poll::Pending
-    W->>R: 3. register(fd, waker)
+    Note over W,T: Task Execution Level
+    W->>+T: 1. poll()
+    T-->>-W: 2. return Poll::Pending
+    
+    Note over W,R: I/O Registration
+    W->>+R: 3. register(fd, waker)
     W->>W: 4. park() or find next task
-    R->>K: 5. epoll_wait()
-    K-->>R: 6. Event Ready (FD)
-    R->>T: 7. waker.wake()
+    deactivate W
+
+    Note over R,K: Event Multiplexing (epoll/kqueue)
+    R->>+K: 5. wait(timeout)
+    K-->>-R: 6. Event Ready (FD)
+    
+    Note over R,T: Waker triggers re-scheduling
+    R->>+T: 7. waker.wake()
     T->>W: 8. inject(task) into Scheduler
-    W->>T: 9. poll() again
-    T->>W: 10. return Poll::Ready(n)
+    deactivate T
+    
+    Note over W,T: Task Completion
+    W->>+T: 9. poll() again
+    T-->>-W: 10. return Poll::Ready(n)
 ```
 
 ## Implementation Details
