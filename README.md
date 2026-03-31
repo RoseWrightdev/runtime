@@ -94,43 +94,6 @@ Beyond 1,000 concurrent connections, the throughput of the custom runtime remain
 - Serialized FD registration via a single `SegQueue`.
 - Syscall overhead of the Reactor's notification mechanism.
 
-## Request Lifecycle
-
-The following sequence documents the interaction between components during an asynchronous I/O operation (e.g., `TcpStream::read`).
-
-```mermaid
-sequenceDiagram
-    participant T as Task (Future)
-    participant W as Worker Thread
-    participant R as Reactor Thread
-    participant K as Kernel (OS)
-
-    Note over W,T: Task Execution Level
-    activate W
-    W->>+T: 1. poll()
-    T-->>-W: 2. return Poll::Pending
-    
-    Note over W,R: I/O Registration
-    W->>+R: 3. register(fd, waker)
-    W->>W: 4. park() or find next task
-    deactivate W
-
-    Note over R,K: Event Multiplexing (epoll/kqueue)
-    R->>+K: 5. wait(timeout)
-    K-->>-R: 6. Event Ready (FD)
-    
-    Note over R,T: Waker triggers re-scheduling
-    R->>+T: 7. waker.wake()
-    T->>W: 8. inject(task) into Scheduler
-    deactivate T
-    deactivate R
-    
-    Note over W,T: Task Completion
-    activate W
-    W->>+T: 9. poll() again
-    T-->>-W: 10. return Poll::Ready(n)
-    deactivate W
-```
 
 ## Implementation Details
 
