@@ -12,31 +12,50 @@ fn main() {
     let concurrency = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(50);
     let total_messages = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(10000);
     let payload_size = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(65536);
+    let runs = args
+        .windows(2)
+        .find(|w| w[0] == "--runs" || w[0] == "-r")
+        .and_then(|w| w[1].parse::<usize>().ok())
+        .unwrap_or(1);
 
     if !csv_mode {
 		println!("\n\n");
         println!(
-            "Payload: {} bytes | Concurrency: {} | Total: {} msgs\n",
-            payload_size, concurrency, total_messages
+            "Payload: {} bytes | Concurrency: {} | Total: {} msgs | Runs: {}\n",
+            payload_size, concurrency, total_messages, runs
         );
     }
 
-    // Run Custom Runtime Benchmark
-    if !csv_mode {
-        println!("\x1b[1;33m[1/2] Benchmarking Custom Runtime...\x1b[0m");
-    }
-    let custom_results = run_custom_benchmark(concurrency, total_messages, payload_size);
-    if !csv_mode {
-        println!("\x1b[1;32m✓ Completed Custom Runtime\x1b[0m\n");
+    let mut custom_run_results = Vec::new();
+    let mut tokio_run_results = Vec::new();
+
+    for i in 1..=runs {
+        if !csv_mode && runs > 1 {
+            println!("\x1b[1;36m▶️ Run {}/{}\x1b[0m", i, runs);
+        }
+
+        // Run Custom Runtime Benchmark
+        if !csv_mode && runs == 1 {
+            println!("\x1b[1;33m[1/2] Benchmarking Custom Runtime...\x1b[0m");
+        }
+        custom_run_results.push(run_custom_benchmark(concurrency, total_messages, payload_size));
+        
+        // Run Tokio Runtime Benchmark
+        if !csv_mode && runs == 1 {
+            println!("\x1b[1;33m[2/2] Benchmarking Tokio Runtime (Multi-thread)...\x1b[0m");
+        }
+        tokio_run_results.push(run_tokio_benchmark(concurrency, total_messages, payload_size));
+
+        if !csv_mode && runs > 1 {
+            println!("\x1b[1;32m   ✓ Finished run {}\x1b[0m", i);
+        }
     }
 
-    // Run Tokio Runtime Benchmark
+    let custom_results = aggregate_median(custom_run_results);
+    let tokio_results = aggregate_median(tokio_run_results);
+
     if !csv_mode {
-        println!("\x1b[1;33m[2/2] Benchmarking Tokio Runtime (Multi-thread)...\x1b[0m");
-    }
-    let tokio_results = run_tokio_benchmark(concurrency, total_messages, payload_size);
-    if !csv_mode {
-        println!("\x1b[1;32m✓ Completed Tokio\x1b[0m\n");
+        println!("\n\x1b[1;32m✅ All runs complete. Reporting Median Values:\x1b[0m\n");
     }
 
     // Display Results
@@ -51,6 +70,7 @@ fn main() {
     }
 }
 
+#[derive(Clone, Copy)]
 struct BenchResults {
     duration: Duration,
     throughput: f64,
@@ -60,6 +80,55 @@ struct BenchResults {
     p95: u64,
     p99: u64,
     max: u64,
+}
+
+fn aggregate_median(mut results: Vec<BenchResults>) -> BenchResults {
+    if results.is_empty() {
+        panic!("No results to aggregate");
+    }
+    if results.len() == 1 {
+        return results.pop().unwrap();
+    }
+
+    let mut durations: Vec<f64> = results.iter().map(|r| r.duration.as_secs_f64()).collect();
+    let mut throughputs: Vec<f64> = results.iter().map(|r| r.throughput).collect();
+    let mut msg_rates: Vec<f64> = results.iter().map(|r| r.msg_rate).collect();
+    let mut avgs: Vec<f64> = results.iter().map(|r| r.avg).collect();
+    let mut p50s: Vec<u64> = results.iter().map(|r| r.p50).collect();
+    let mut p95s: Vec<u64> = results.iter().map(|r| r.p95).collect();
+    let mut p99s: Vec<u64> = results.iter().map(|r| r.p99).collect();
+    let mut maxs: Vec<u64> = results.iter().map(|r| r.max).collect();
+
+    fn median_f64(values: &mut Vec<f64>) -> f64 {
+        values.sort_by(|a, b| a.partial_cmp(b).expect("NaN in results"));
+        let mid = values.len() / 2;
+        if values.len() % 2 == 0 {
+            (values[mid - 1] + values[mid]) / 2.0
+        } else {
+            values[mid]
+        }
+    }
+
+    fn median_u64(values: &mut Vec<u64>) -> u64 {
+        values.sort();
+        let mid = values.len() / 2;
+        if values.len() % 2 == 0 {
+            (values[mid - 1] + values[mid]) / 2
+        } else {
+            values[mid]
+        }
+    }
+
+    BenchResults {
+        duration: Duration::from_secs_f64(median_f64(&mut durations)),
+        throughput: median_f64(&mut throughputs),
+        msg_rate: median_f64(&mut msg_rates),
+        avg: median_f64(&mut avgs),
+        p50: median_u64(&mut p50s),
+        p95: median_u64(&mut p95s),
+        p99: median_u64(&mut p99s),
+        max: median_u64(&mut maxs),
+    }
 }
 
 fn run_custom_benchmark(concurrency: usize, total_messages: usize, payload_size: usize) -> BenchResults {
