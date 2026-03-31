@@ -1,8 +1,8 @@
-use std::cell::{RefCell, Cell};
 use crate::executor::Handle;
-use std::sync::Arc;
 use crate::executor::Task;
 use crossbeam::deque;
+use std::cell::{Cell, RefCell};
+use std::sync::Arc;
 
 thread_local! {
     pub static CONTEXT: RefCell<Option<Handle>> = const { RefCell::new(None)};

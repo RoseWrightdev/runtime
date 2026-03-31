@@ -10,7 +10,6 @@ use crate::executor::{Handle, Reactor, Scheduler, Worker, join_handle};
 pub struct Runtime {
     handle: Handle,
     workers: Vec<std::thread::JoinHandle<()>>,
-    reactor_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Runtime {
@@ -39,18 +38,16 @@ impl Runtime {
             parkers.push(parker);
         }
 
-        let scheduler = Arc::new(Scheduler::new(stealers, unparkers));
         let reactor = Arc::new(Reactor::new());
-        let handle = Handle::new(scheduler, reactor.clone());
-
-        // Spawn a dedicated thread for the I/O reactor
-        let reactor_handle = reactor.clone();
-        let reactor_thread = std::thread::Builder::new()
-            .name("reactor".to_string())
-            .spawn(move || {
-                reactor_handle.run();
-            })
-            .expect("Failed to spawn reactor thread");
+        let reactor_clone = reactor.clone();
+        
+        let scheduler = Arc::new(Scheduler::new(
+            stealers, 
+            unparkers,
+            Box::new(move || reactor_clone.notify())
+        ));
+        
+        let handle = Handle::new(scheduler, reactor);
 
         let mut workers = Vec::with_capacity(num_workers);
         for (i, (queue, parker)) in local_queues.into_iter().zip(parkers).enumerate() {
@@ -64,7 +61,6 @@ impl Runtime {
         Self {
             handle,
             workers,
-            reactor_thread: Some(reactor_thread),
         }
     }
 
@@ -104,10 +100,6 @@ impl Drop for Runtime {
         // Wake up and join reactor
         self.handle.reactor.shutdown.store(true, Ordering::Release);
         self.handle.reactor.notify();
-        
-        if let Some(reactor) = self.reactor_thread.take() {
-            let _ = reactor.join();
-        }
 
         // Join workers
         for worker in self.workers.drain(..) {

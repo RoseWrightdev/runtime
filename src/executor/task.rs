@@ -26,7 +26,9 @@ pub struct Task {
     scheduler: Arc<Scheduler>,
     pub(crate) state: AtomicU8,
     pub(crate) join_state: AtomicU8,
-    pub(crate) result: UnsafeCell<Option<Result<Box<dyn std::any::Any + Send>, crate::executor::join_handle::JoinError>>>,
+    pub(crate) result: UnsafeCell<
+        Option<Result<Box<dyn std::any::Any + Send>, crate::executor::join_handle::JoinError>>,
+    >,
     pub(crate) join_waker: UnsafeCell<Option<std::task::Waker>>,
 }
 
@@ -70,7 +72,7 @@ impl ArcWake for Task {
             // Only use the LIFO slot if we are on a worker thread that will check it.
             // This prevents "lost wakeups" where a task is stuck in a non-worker thread's LIFO slot.
             let mut pushed = false;
-            
+
             if crate::executor::context::IS_WORKER.with(|w| w.get()) {
                 // 1. Try LIFO slot (highest priority)
                 pushed = crate::executor::context::LIFO_SLOT.with(|slot| {

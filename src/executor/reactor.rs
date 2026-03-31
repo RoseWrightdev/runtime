@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::task::Waker;
 use std::time::Instant;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use crossbeam::queue::SegQueue;
 use polling::{Events, Poller, Event, AsSource, AsRawSource};
@@ -24,11 +24,19 @@ pub(crate) enum Registration {
     },
 }
 
+pub struct ReactorState {
+    hot_slots: Vec<Option<(Option<Waker>, Option<Waker>)>>,
+    cold_slots: HashMap<usize, (Option<Waker>, Option<Waker>)>,
+    timer_wheel: TimerWheel,
+}
+
 pub struct Reactor {
     poller: Poller,
     registrations: SegQueue<Registration>,
     pub(crate) shutdown: Arc<AtomicBool>,
     pub(crate) notified: AtomicBool,
+    state: Mutex<ReactorState>,
+    events: Mutex<Events>,
 }
 
 impl Reactor {
@@ -38,6 +46,12 @@ impl Reactor {
             registrations: SegQueue::new(),
             shutdown: Arc::new(AtomicBool::new(false)),
             notified: AtomicBool::new(false),
+            state: Mutex::new(ReactorState {
+                hot_slots: vec![None; 1024],
+                cold_slots: HashMap::new(),
+                timer_wheel: TimerWheel::new(Instant::now()),
+            }),
+            events: Mutex::new(Events::new()),
         }
     }
 
@@ -82,128 +96,110 @@ impl Reactor {
         }
     }
 
-    /// The main event loop for the reactor. This should be spawned on a dedicated thread.
-    pub(crate) fn run(&self) {
-        // Hybrid Registry: 1024-slot array for the hot-path (Fds are usually small) 
-        // fallback to HashMap for extremely high FDs.
-        let mut hot_slots: Vec<Option<(Option<Waker>, Option<Waker>)>> = vec![None; 1024];
-        let mut cold_slots: HashMap<usize, (Option<Waker>, Option<Waker>)> = HashMap::new();
-        let mut timer_wheel = TimerWheel::new(Instant::now());
-        let mut events = Events::new();
-
-        loop {
+    /// Attempts to poll the reactor if no other worker is currently polling.
+    /// Returns true if it successfully acquired the lock and polled, false otherwise.
+    pub(crate) fn try_poll(&self) -> bool {
+        if let Ok(mut state) = self.state.try_lock() {
             if self.shutdown.load(Ordering::Acquire) {
-                break;
+                return false;
             }
 
             // 1. Drain registration queue into local state
             while let Some(reg) = self.registrations.pop() {
                 match reg {
-                    Registration::IO {
-                        key,
-                        waker,
-                        read,
-                        write,
-                    } => {
-                        let state = if key < 1024 {
-                            hot_slots[key].get_or_insert((None, None))
+                    Registration::IO { key, waker, read, write } => {
+                        let slot = if key < 1024 {
+                            state.hot_slots[key].get_or_insert((None, None))
                         } else {
-                            cold_slots.entry(key).or_insert((None, None))
+                            state.cold_slots.entry(key).or_insert((None, None))
                         };
                         
-                        if read {
-                            state.0 = Some(waker);
-                        } else if write {
-                            state.1 = Some(waker);
-                        }
+                        if read { slot.0 = Some(waker.clone()); }
+                        if write { slot.1 = Some(waker.clone()); }
 
-                        // Update poller interest
                         let mut interest = Event::none(key);
-                        interest.readable = state.0.is_some();
-                        interest.writable = state.1.is_some();
+                        interest.readable = slot.0.is_some();
+                        interest.writable = slot.1.is_some();
 
                         unsafe {
-                            let fd = std::os::unix::io::BorrowedFd::borrow_raw(
-                                key as std::os::unix::io::RawFd,
-                            );
+                            let fd = std::os::unix::io::BorrowedFd::borrow_raw(key as std::os::unix::io::RawFd);
                             let _ = self.poller.modify(fd, interest);
                         }
                     }
                     Registration::Timer { deadline, waker } => {
-                        timer_wheel.insert(deadline, waker);
+                        state.timer_wheel.insert(deadline, waker);
                     }
                     Registration::Delete { key } => {
                         if key < 1024 {
-                            hot_slots[key] = None;
+                            state.hot_slots[key] = None;
                         } else {
-                            cold_slots.remove(&key);
+                            state.cold_slots.remove(&key);
                         }
                     }
                 }
             }
 
             // 2. Wait for OS events or Timer expiration
+            let mut events = self.events.lock().unwrap();
             events.clear();
 
-            let timeout = timer_wheel.next_expiration().map(|deadline| {
+            let timeout = state.timer_wheel.next_expiration().map(|deadline| {
                 deadline.saturating_duration_since(Instant::now())
             });
 
             // Clear notified flag BEFORE waiting to ensure we catch any notifications during wait
             self.notified.store(false, Ordering::SeqCst);
+            // Block inside epoll_wait while holding the Mutex lock
             let _ = self.poller.wait(&mut events, timeout);
 
             // 3. Dispatch I/O events
             for ev in events.iter() {
-                let state = if ev.key < 1024 {
-                    hot_slots[ev.key].as_mut()
+                let slot = if ev.key < 1024 {
+                    state.hot_slots[ev.key].as_mut()
                 } else {
-                    cold_slots.get_mut(&ev.key)
+                    state.cold_slots.get_mut(&ev.key)
                 };
 
-                if let Some(state) = state {
+                if let Some(slot) = slot {
                     let mut r_waker = None;
                     let mut w_waker = None;
                     
-                    if ev.readable {
-                        r_waker = state.0.take();
-                    }
-                    if ev.writable {
-                        w_waker = state.1.take();
-                    }
+                    if ev.readable { r_waker = slot.0.take(); }
+                    if ev.writable { w_waker = slot.1.take(); }
 
-                    // Direct wake: Zero allocations here. 
-                    // Batching is implicitly handled by Scheduler's searching_workers check
+                    // Direct wake
                     if let Some(w) = r_waker { w.wake(); }
                     if let Some(w) = w_waker { w.wake(); }
 
                     // Clear triggered interest in poller
                     let mut interest = Event::none(ev.key);
-                    interest.readable = state.0.is_some();
-                    interest.writable = state.1.is_some();
+                    interest.readable = slot.0.is_some();
+                    interest.writable = slot.1.is_some();
 
                     unsafe {
-                        let fd = std::os::unix::io::BorrowedFd::borrow_raw(
-                            ev.key as std::os::unix::io::RawFd,
-                        );
+                        let fd = std::os::unix::io::BorrowedFd::borrow_raw(ev.key as std::os::unix::io::RawFd);
                         let _ = self.poller.modify(fd, interest);
                     }
 
-                    if state.0.is_none() && state.1.is_none() {
+                    if slot.0.is_none() && slot.1.is_none() {
                         if ev.key < 1024 {
-                            hot_slots[ev.key] = None;
+                            state.hot_slots[ev.key] = None;
                         } else {
-                            cold_slots.remove(&ev.key);
+                            state.cold_slots.remove(&ev.key);
                         }
                     }
                 }
             }
 
             // 4. Tick the timer wheel and dispatch expired timers
-            let expired = timer_wheel.tick(Instant::now());
+            let expired = state.timer_wheel.tick(Instant::now());
             for waker in expired {
                 waker.wake();
             }
+
+            return true;
         }
+        
+        false
     }
 }

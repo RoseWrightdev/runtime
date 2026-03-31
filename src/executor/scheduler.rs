@@ -31,10 +31,16 @@ pub struct Scheduler {
     pub(crate) shutdown: AtomicBool,
     /// Bucketized task pools for zero-allocation recycling (indexed by power-of-two size).
     pub task_pools: [Arc<SegQueue<Arc<Task>>>; 11],
+    /// Callback to wake the reactor if a worker is blocked polling I/O.
+    pub(crate) reactor_notifier: Box<dyn Fn() + Send + Sync>,
 }
 
 impl Scheduler {
-    pub(crate) fn new(stealers: Vec<Stealer<Arc<Task>>>, unparkers: Vec<Unparker>) -> Self {
+    pub(crate) fn new(
+        stealers: Vec<Stealer<Arc<Task>>>, 
+        unparkers: Vec<Unparker>, 
+        reactor_notifier: Box<dyn Fn() + Send + Sync>
+    ) -> Self {
         Self {
             queue: Arc::new(Injector::new()),
             stealers,
@@ -44,6 +50,7 @@ impl Scheduler {
             notify_cursor: AtomicUsize::new(0),
             shutdown: AtomicBool::new(false),
             task_pools: std::array::from_fn(|_| Arc::new(SegQueue::new())),
+            reactor_notifier,
         }
     }
 
@@ -122,6 +129,8 @@ impl Scheduler {
         if self.searching_workers.load(Ordering::Acquire) == 0 {
             let idx = self.notify_cursor.fetch_add(1, Ordering::Relaxed) % self.unparkers.len();
             self.unparkers[idx].unpark();
+            // Wake the reactor in case the only available worker is parked inside epoll_wait
+            (self.reactor_notifier)();
         }
     }
 

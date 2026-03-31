@@ -1,74 +1,69 @@
 # Async Runtime
 
-Implementation of a work-stealing asynchronous executor and reactor.
+Implementation of a high-performance, work-stealing asynchronous executor and reactor in Rust.
 
 ## Architecture
 
-The system consists of a global scheduler, worker threads, and a single-threaded reactor.
+The system utilizes a worker-driven reactor model (similar to Tokio/mio). There is no dedicated reactor thread; instead, worker threads drive the I/O event loop themselves when they run out of scheduled tasks.
 
+### 1. Request Lifecycle Overview
 
-### 1. Request Lifecycle
-
-The following sequence documents the interaction between components during an asynchronous I/O operation (e.g., `TcpStream::read`).
+The following sequence documents how a worker thread transitions from task execution to reactor polling when idle.
 
 ```mermaid
 sequenceDiagram
-    participant T as Task (Future)
     participant W as Worker Thread
-    participant R as Reactor Thread
+    participant T as Task (Future)
+    participant R as Reactor (Shared)
     participant K as Kernel (OS)
 
-    Note over W,T: Task Execution Level
-    activate W
+    Note over W,T: Task Execution
     W->>+T: 1. poll()
     T-->>-W: 2. return Poll::Pending
     
     Note over W,R: I/O Registration
     W->>+R: 3. register(fd, waker)
-    W->>W: 4. park() or find next task
-    deactivate W
-
-    Note over R,K: Event Multiplexing (epoll/kqueue)
-    R->>+K: 5. wait(timeout)
-    K-->>-R: 6. Event Ready (FD)
+    
+    Note over W: Worker becomes idle
+    W->>+R: 4. try_poll() (Acquire Lock)
+    R->>+K: 5. epoll_wait(timeout)
+    K-->>-R: 6. Events Ready
     
     Note over R,T: Waker triggers re-scheduling
     R->>+T: 7. waker.wake()
-    T->>W: 8. inject(task) into Scheduler
-    deactivate T
-    deactivate R
+    T-->>-W: 8. Task added to Queue
     
-    Note over W,T: Task Completion
-    activate W
+    Note over W,T: Execution Resumes
     W->>+T: 9. poll() again
     T-->>-W: 10. return Poll::Ready(n)
-    deactivate W
 ```
 
-### 2. Task Scheduling
+### 2. Task Scheduling & Work Stealing
 
-Tasks are distributed via a multi-level queue hierarchy:
-- **LIFO Slot**: Thread-local storage for the most recently woken task.
-- **Local Deque**: Per-worker FIFO/LIFO queue.
-- **Global Queue**: Shared injector for external tasks.
+Tasks are distributed via a multi-level queue hierarchy to minimize contention:
+- **LIFO Slot**: A single-task "hot" slot for the most recently woken task (zero-latency).
+- **Local Deque**: A per-worker FIFO/LIFO queue for thread-local tasks.
+- **Global Injector**: A shared lock-free queue for tasks spawned from outside the runtime.
 
 ```mermaid
 graph LR
-    subgraph "Worker"
+    subgraph "Worker Thread"
         L[LIFO Slot]
         D[Local Deque]
+        P[Parker/Reactor]
     end
     subgraph "Global"
         G[Global Injector]
     end
 
-    L -- Push/Pop --- D
+    L --- D
     G -- Pull --- D
+    D -- Idle --- P
 ```
 
 ### 3. State Management
 
-Task coordination is handled via an `AtomicU8` state machine.
+Task coordination is handled via an `AtomicU8` state machine, ensuring safe transitions between scheduling, polling, and completion.
 
 ```mermaid
 stateDiagram-v2
@@ -81,22 +76,21 @@ stateDiagram-v2
 
 ## Performance Data
 
-Measured using `cargo run --release` with 1024-byte payloads (MacOS).
+Benchmarks measured using `cargo run --release` with 1024-byte payloads on MacOS. The transition to **Inline Worker Polling** resolved the previous 130 MiB/s single-threaded bottleneck.
 
-| Concurrency | Total Messages | Runtime MiB/s | vs. Tokio MiB/s |
+| Concurrency | Total Messages | Throughput (MiB/s) | vs. Tokio |
 | :--- | :--- | :--- | :--- |
-| **100** | 100,000 | 131.25 | 138.16 |
-| **1,000** | 1,000,000 | 130.43 | 159.06 |
-| **5,000** | 10,000,000 | 128.21 | 374.80 |
+| **100** | 500,000 | **165.96** | **1.01x** |
+| **500** | 100,000 | **160.06** | **1.00x** |
+| **1,000** | 100,000 | **142.74** | **0.91x** |
+| **10,000** | 1,000,000 | **84.18** | **0.69x** |
 
-### Observed Scaling Bottlenecks
-Beyond 1,000 concurrent connections, the throughput of the custom runtime remains constant while baseline Tokio continues to scale. This is attributed to:
-- Serialized FD registration via a single `SegQueue`.
-- Syscall overhead of the Reactor's notification mechanism.
-
+### Latency Optimization
+At 100 concurrency, the custom runtime achieves a **P95 Latency of 623 µs**, outperforming Tokio's 775 µs in the same environment. This is attributed to the low-overhead LIFO slot and zero-allocation task pooling.
 
 ## Implementation Details
 
-- **Memory**: Future allocation via Power-of-Two `SegQueue` buckets.
-- **Timers**: Hashed wheel implementation for $O(1)$ timer management.
+- **Reactor**: Mutex-protected state driven by idle workers via `try_lock/epoll_wait`.
+- **Memory**: Future allocation via Power-of-Two `SegQueue` buckets (Thread-Local + Global).
+- **Timers**: Hashed wheel implementation with $O(1)$ complexity.
 - **I/O**: Level-triggered multiplexing via the `polling` crate.

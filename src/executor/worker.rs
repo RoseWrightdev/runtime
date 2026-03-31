@@ -99,17 +99,17 @@ impl Worker {
                 continue;
             }
 
-            // 4. Park the thread if we are truly idle
+            // 4. Fallback to parking or reactor polling
             self.handle.scheduler.searching_workers.fetch_sub(1, Ordering::SeqCst);
-            self.handle
-                .scheduler
-                .sleeping_workers
-                .fetch_add(1, Ordering::Release);
-            self.parker.park();
-            self.handle
-                .scheduler
-                .sleeping_workers
-                .fetch_sub(1, Ordering::Release);
+            self.handle.scheduler.sleeping_workers.fetch_add(1, Ordering::Release);
+            
+            // Try to drive the reactor. If we acquire the lock, we wait for I/O events.
+            // If another worker is already driving it, we simply park.
+            if !self.handle.reactor.try_poll() {
+                self.parker.park();
+            }
+
+            self.handle.scheduler.sleeping_workers.fetch_sub(1, Ordering::Release);
         }
 
         // Phase 4: Cleanup raw pointer on exit and restore the queue
