@@ -50,7 +50,7 @@ Benchmarks measured using `cargo run --release` with 1024-byte payloads on MacOS
 | **1,000** | 100,000 | **151.95** | **0.95x** |
 | **10,000** | 100,000 | **12.20** | **0.99x** |
 
-
+```
 Payload: 1024 bytes | Concurrency: 250 | Total: 100000 msgs | Runs: 100
 ┌──────────────┬────────────────┬───────────────┬────────────┐
 │ Metric       ┆ Custom Runtime ┆ Tokio Runtime ┆ Rel. Stats │
@@ -71,3 +71,4 @@ Payload: 1024 bytes | Concurrency: 250 | Total: 100000 msgs | Runs: 100
 ├╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┤
 │ Max Latency  ┆ 3271 µs        ┆ 2715 µs       ┆ 0.83x      │
 └──────────────┴────────────────┴───────────────┴────────────┘
+```
