@@ -39,23 +39,13 @@ sequenceDiagram
 ```
 
 ## Performance Data
-
-Benchmarks measured using `cargo run --release` with 1024-byte payloads on MacOS. 
-
-| Concurrency | Total Messages | Throughput (MiB/s) | vs. Tokio |
-| :--- | :--- | :--- | :--- |
-| **100** | 500,000 | **188.40** | **1.17x** |
-| **250** | 100,000 | **188.40** | **1.17x** |
-| **500** | 100,000 | **178.96** | **1.12x** |
-| **1,000** | 100,000 | **151.95** | **0.95x** |
-| **10,000** | 100,000 | **12.20** | **0.99x** |
-
+Below is the median result of 100 runs of tokio and the custom runtime
 ```
 Payload: 1024 bytes | Concurrency: 250 | Total: 100000 msgs | Runs: 100
 ┌──────────────┬────────────────┬───────────────┬────────────┐
 │ Metric       ┆ Custom Runtime ┆ Tokio Runtime ┆ Rel. Stats │
 ╞══════════════╪════════════════╪═══════════════╪════════════╡
-│ Total Time   ┆ 518.33ms       ┆ 607.72ms      ┆ -          │
+│ Total Time   ┆ 518.33ms       ┆ 607.72ms      ┆ 1.17x      │
 ├╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┤
 │ Throughput   ┆ 188.40 MiB/s   ┆ 160.69 MiB/s  ┆ 1.17x      │
 ├╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┤
