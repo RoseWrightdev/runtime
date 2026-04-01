@@ -2,14 +2,6 @@
 
 Implementation of a high-performance, work-stealing asynchronous executor and reactor in Rust.
 
-## Architecture
-
-The system utilizes a worker-driven reactor model (similar to Tokio/mio). There is no dedicated reactor thread; instead, worker threads drive the I/O event loop themselves when they run out of scheduled tasks.
-
-### Request Lifecycle Overview
-
-The following sequence documents how a worker thread transitions from task execution to reactor polling when idle.
-
 ```mermaid
 sequenceDiagram
     participant W as Worker Thread
