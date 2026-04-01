@@ -7,11 +7,14 @@ use std::{
         Arc,
     },
     task::Context,
+    any::Any
 };
 
+use crossbeam::utils::CachePadded;
 use futures::task::ArcWake;
 
 use crate::executor::scheduler::Scheduler;
+use crate::executor::join_handle::JoinError;
 
 pub(crate) const STATE_IDLE: u8 = 0;
 pub(crate) const STATE_SCHEDULED: u8 = 1;
@@ -21,14 +24,18 @@ pub(crate) const JOIN_STATE_RUNNING: u8 = 0;
 pub(crate) const JOIN_STATE_READY: u8 = 1;
 pub(crate) const JOIN_STATE_JOINED: u8 = 2;
 
+
+pub(crate) struct ExecutionState {
+    pub(crate) state: AtomicU8,
+    pub(crate) lifo_count: AtomicU8,
+}
+
 pub struct Task {
     pub(crate) future: UnsafeCell<RawFuture>,
     scheduler: Arc<Scheduler>,
-    pub(crate) state: AtomicU8,
-    pub(crate) join_state: AtomicU8,
-    pub(crate) result: UnsafeCell<
-        Option<Result<Box<dyn std::any::Any + Send>, crate::executor::join_handle::JoinError>>,
-    >,
+    pub(crate) exec_state: CachePadded<ExecutionState>,
+    pub(crate) join_state: CachePadded<AtomicU8>,
+    pub(crate) result: UnsafeCell<Option<Result<Box<dyn Any + Send>, JoinError>>>,
     pub(crate) join_waker: UnsafeCell<Option<std::task::Waker>>,
 }
 
@@ -44,8 +51,11 @@ impl Task {
         Arc::new(Task {
             future: UnsafeCell::new(RawFuture::new(future, layout)),
             scheduler,
-            state: AtomicU8::new(STATE_SCHEDULED),
-            join_state: AtomicU8::new(JOIN_STATE_RUNNING),
+            exec_state: CachePadded::new(ExecutionState {
+                state: AtomicU8::new(STATE_SCHEDULED),
+                lifo_count: AtomicU8::new(0),
+            }),
+            join_state: CachePadded::new(AtomicU8::new(JOIN_STATE_RUNNING)),
             result: UnsafeCell::new(None),
             join_waker: UnsafeCell::new(None),
         })
@@ -59,7 +69,7 @@ impl Task {
             let raw = &mut *arc_self.future.get();
             raw.recondition(future);
         }
-        arc_self.state.store(STATE_SCHEDULED, Ordering::Release);
+        arc_self.exec_state.state.store(STATE_SCHEDULED, Ordering::Release);
     }
 }
 
@@ -68,37 +78,45 @@ unsafe impl Send for Task {}
 
 impl ArcWake for Task {
     fn wake_by_ref(arc_self: &Arc<Self>) {
-        if arc_self.state.swap(STATE_SCHEDULED, Ordering::AcqRel) == STATE_IDLE {
+        if arc_self.exec_state.state.swap(STATE_SCHEDULED, Ordering::AcqRel) == STATE_IDLE {
             // Only use the LIFO slot if we are on a worker thread that will check it.
             // This prevents "lost wakeups" where a task is stuck in a non-worker thread's LIFO slot.
             let mut pushed = false;
 
             if crate::executor::context::IS_WORKER.with(|w| w.get()) {
                 // 1. Try LIFO slot (highest priority)
-                pushed = crate::executor::context::LIFO_SLOT.with(|slot| {
-                    let mut slot = slot.borrow_mut();
-                    if slot.is_none() {
-                        *slot = Some(arc_self.clone());
-                        true
-                    } else {
-                        false
-                    }
-                });
+                // If the task has been woken more than 3 times consecutively into the LIFO slot,
+                // bypass the slot and push it to the local deque to ensure other tasks aren't starved.
+                if arc_self.exec_state.lifo_count.load(Ordering::Relaxed) < 3 {
+                    pushed = crate::executor::context::LIFO_SLOT.with(|slot| {
+                        let mut slot = slot.borrow_mut();
+                        if slot.is_none() {
+                            *slot = Some(arc_self.clone());
+                            true
+                        } else {
+                            false
+                        }
+                    });
+                }
 
-                // 2. If LIFO is full, try Local Queue (ZERO-OVERHEAD path)
-                if !pushed {
+                if pushed {
+                    arc_self.exec_state.lifo_count.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    // 2. If LIFO is full or bypassed, try Local Queue (ZERO-OVERHEAD path)
                     let local_q_ptr = crate::executor::context::LOCAL_QUEUE_PTR.with(|q| q.get());
                     if !local_q_ptr.is_null() {
                         unsafe {
                             (&mut *local_q_ptr).push(arc_self.clone());
                         }
                         pushed = true;
+                        arc_self.exec_state.lifo_count.store(0, Ordering::Relaxed);
                     }
                 }
             }
 
             if !pushed {
                 arc_self.scheduler.inject(arc_self.clone());
+                arc_self.exec_state.lifo_count.store(0, Ordering::Relaxed);
             }
         }
     }
@@ -158,6 +176,7 @@ impl RawFuture {
         self.drop_fn = Self::drop_future::<F>;
     }
 
+    #[inline(always)]
     unsafe fn poll<F: Future<Output = ()>>(
         ptr: *mut u8,
         cx: *mut Context<'_>,
@@ -166,6 +185,7 @@ impl RawFuture {
         unsafe { std::pin::Pin::new_unchecked(future).poll(&mut *cx) }
     }
 
+    #[inline(always)]
     unsafe fn drop_future<F>(ptr: *mut u8) {
         unsafe { ptr::drop_in_place(ptr as *mut F) };
     }

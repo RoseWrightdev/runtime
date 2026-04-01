@@ -1,5 +1,6 @@
 use crate::executor::Handle;
 use crate::executor::Task;
+use crate::executor::Registration;
 use crossbeam::deque;
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
@@ -21,6 +22,8 @@ thread_local! {
         RefCell::new(Vec::new()), RefCell::new(Vec::new()), RefCell::new(Vec::new()),
         RefCell::new(Vec::new()), RefCell::new(Vec::new()),
     ]};
+    /// Thread-local buffer for batched reactor registrations.
+    pub(crate) static REGISTRATION_BUFFER: RefCell<Vec<Registration>> = const { RefCell::new(Vec::new()) };
 }
 
 pub(crate) struct EnterGuard;

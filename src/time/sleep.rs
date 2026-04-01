@@ -29,9 +29,9 @@ impl Future for Sleep {
         }
 
         if !self.registered {
-            // Register this timer with the current runtime's reactor
+            // Register this timer with the current runtime's reactor via the buffered handle
             let handle = Handle::current();
-            handle.reactor.register_timer(self.deadline, cx.waker().clone());
+            handle.register_timer(self.deadline, cx.waker().clone());
             self.registered = true;
         }
 

@@ -4,11 +4,12 @@ use std::time::Instant;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use crossbeam::queue::SegQueue;
+use crossbeam::utils::CachePadded;
 use polling::{Events, Poller, Event, AsSource, AsRawSource};
 
 use crate::time::wheel::TimerWheel;
 
-pub(crate) enum Registration {
+pub enum Registration {
     IO {
         key: usize,
         waker: Waker,
@@ -32,9 +33,9 @@ pub struct ReactorState {
 
 pub struct Reactor {
     poller: Poller,
-    registrations: SegQueue<Registration>,
+    registrations: SegQueue<Vec<Registration>>,
     pub(crate) shutdown: Arc<AtomicBool>,
-    pub(crate) notified: AtomicBool,
+    pub(crate) notified: CachePadded<AtomicBool>,
     state: Mutex<ReactorState>,
     events: Mutex<Events>,
 }
@@ -45,7 +46,7 @@ impl Reactor {
             poller: Poller::new().expect("Failed to create Poller"),
             registrations: SegQueue::new(),
             shutdown: Arc::new(AtomicBool::new(false)),
-            notified: AtomicBool::new(false),
+            notified: CachePadded::new(AtomicBool::new(false)),
             state: Mutex::new(ReactorState {
                 hot_slots: vec![None; 1024],
                 cold_slots: HashMap::new(),
@@ -68,25 +69,15 @@ impl Reactor {
         let key = source.as_raw_fd() as usize;
         let _ = self.poller.delete(source);
         // Also notify the reactor loop to clear any pending wakers for this key
-        self.registrations.push(Registration::Delete { key });
-        self.notify();
+        self.push_batch(vec![Registration::Delete { key }]);
     }
 
-    /// Submits a waker to be called when the specified key is ready for reading/writing.
-    pub(crate) fn register(&self, key: usize, waker: Waker, read: bool, write: bool) {
-        self.registrations.push(Registration::IO {
-            key,
-            waker,
-            read,
-            write,
-        });
-        self.notify();
-    }
-
-    /// Submit a new timer interest to the reactor from any thread.
-    pub(crate) fn register_timer(&self, deadline: Instant, waker: Waker) {
-        self.registrations.push(Registration::Timer { deadline, waker });
-        self.notify();
+    /// Pushes a batch of registrations and notifies the reactor.
+    pub(crate) fn push_batch(&self, batch: Vec<Registration>) {
+        if !batch.is_empty() {
+            self.registrations.push(batch);
+            self.notify();
+        }
     }
 
     /// Wake up the reactor's poller wait loop.
@@ -105,35 +96,37 @@ impl Reactor {
             }
 
             // 1. Drain registration queue into local state
-            while let Some(reg) = self.registrations.pop() {
-                match reg {
-                    Registration::IO { key, waker, read, write } => {
-                        let slot = if key < 1024 {
-                            state.hot_slots[key].get_or_insert((None, None))
-                        } else {
-                            state.cold_slots.entry(key).or_insert((None, None))
-                        };
-                        
-                        if read { slot.0 = Some(waker.clone()); }
-                        if write { slot.1 = Some(waker.clone()); }
+            while let Some(batch) = self.registrations.pop() {
+                for reg in batch {
+                    match reg {
+                        Registration::IO { key, waker, read, write } => {
+                            let slot = if key < 1024 {
+                                state.hot_slots[key].get_or_insert((None, None))
+                            } else {
+                                state.cold_slots.entry(key).or_insert((None, None))
+                            };
+                            
+                            if read { slot.0 = Some(waker.clone()); }
+                            if write { slot.1 = Some(waker.clone()); }
 
-                        let mut interest = Event::none(key);
-                        interest.readable = slot.0.is_some();
-                        interest.writable = slot.1.is_some();
+                            let mut interest = Event::none(key);
+                            interest.readable = slot.0.is_some();
+                            interest.writable = slot.1.is_some();
 
-                        unsafe {
-                            let fd = std::os::unix::io::BorrowedFd::borrow_raw(key as std::os::unix::io::RawFd);
-                            let _ = self.poller.modify(fd, interest);
+                            unsafe {
+                                let fd = std::os::unix::io::BorrowedFd::borrow_raw(key as std::os::unix::io::RawFd);
+                                let _ = self.poller.modify(fd, interest);
+                            }
                         }
-                    }
-                    Registration::Timer { deadline, waker } => {
-                        state.timer_wheel.insert(deadline, waker);
-                    }
-                    Registration::Delete { key } => {
-                        if key < 1024 {
-                            state.hot_slots[key] = None;
-                        } else {
-                            state.cold_slots.remove(&key);
+                        Registration::Timer { deadline, waker } => {
+                            state.timer_wheel.insert(deadline, waker);
+                        }
+                        Registration::Delete { key } => {
+                            if key < 1024 {
+                                state.hot_slots[key] = None;
+                            } else {
+                                state.cold_slots.remove(&key);
+                            }
                         }
                     }
                 }

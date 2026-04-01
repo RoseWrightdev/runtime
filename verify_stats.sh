@@ -11,7 +11,7 @@ cargo build --release
 # Configurable Sweep Parameters
 # (Concurrency levels, Total Messages per level, Payload Size)
 levels=(100 500 1000 5000 10000)
-messages=(500000 100000 100000 500000 1000000)
+messages=(1000000 1000000 1000000 1000000 1000000)
 payload=1024
 
 echo "⏱️ Starting Performance Sweep..."
@@ -24,7 +24,7 @@ for i in "${!levels[@]}"; do
     echo "▶️ Testing: Concurrency=$c | Messages=$m | Payload=$payload"
     
     # Run the compiled binary directly to avoid cargo overhead
-    ./target/release/runtime $c $m $payload --runs 5
+    ./target/release/runtime $c $m $payload --runs 10
     
     echo "⏸️  Sleeping 1s for port recovery..."
     sleep 1

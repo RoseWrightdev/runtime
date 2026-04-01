@@ -29,7 +29,7 @@ pub struct Scheduler {
     /// Round-robin cursor for notifying workers.
     pub notify_cursor: CachePadded<AtomicUsize>,
     /// Shutdown signal.
-    pub(crate) shutdown: AtomicBool,
+    pub(crate) shutdown: CachePadded<AtomicBool>,
     /// Bucketized task pools for zero-allocation recycling (indexed by power-of-two size).
     pub task_pools: [Arc<ArrayQueue<Arc<Task>>>; 11],
     /// Callback to wake the reactor if a worker is blocked polling I/O.
@@ -49,7 +49,7 @@ impl Scheduler {
             sleeping_workers: CachePadded::new(AtomicUsize::new(0)),
             searching_workers: CachePadded::new(AtomicUsize::new(0)),
             notify_cursor: CachePadded::new(AtomicUsize::new(0)),
-            shutdown: AtomicBool::new(false),
+            shutdown: CachePadded::new(AtomicBool::new(false)),
             task_pools: std::array::from_fn(|_| Arc::new(ArrayQueue::new(1024))),
             reactor_notifier,
         }

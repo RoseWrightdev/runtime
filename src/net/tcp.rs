@@ -56,7 +56,7 @@ impl Future for AcceptFuture<'_> {
                 Poll::Ready(Ok((async_stream, addr)))
             }
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                self.listener.reactor.register(self.listener.inner.as_raw_fd() as usize, cx.waker().clone(), true, false);
+                Handle::current().register_io(self.listener.inner.as_raw_fd() as usize, cx.waker().clone(), true, false);
                 Poll::Pending
             }
             Err(e) => Poll::Ready(Err(e)),
@@ -145,7 +145,7 @@ impl Future for ReadFuture<'_, '_> {
         match (&this.stream.inner).read(this.buf) {
             Ok(n) => Poll::Ready(Ok(n)),
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                this.stream.reactor.register(this.stream.inner.as_raw_fd() as usize, cx.waker().clone(), true, false);
+                Handle::current().register_io(this.stream.inner.as_raw_fd() as usize, cx.waker().clone(), true, false);
                 Poll::Pending
             }
             Err(e) => Poll::Ready(Err(e)),
@@ -167,7 +167,7 @@ impl Future for WriteFuture<'_, '_> {
         match (&this.stream.inner).write(this.buf) {
             Ok(n) => Poll::Ready(Ok(n)),
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                this.stream.reactor.register(this.stream.inner.as_raw_fd() as usize, cx.waker().clone(), false, true);
+                Handle::current().register_io(this.stream.inner.as_raw_fd() as usize, cx.waker().clone(), false, true);
                 Poll::Pending
             }
             Err(e) => Poll::Ready(Err(e)),
@@ -204,7 +204,7 @@ impl Future for ConnectFuture<'_> {
                 }
                 
                 // Still connecting... register for writable event.
-                self.stream.reactor.register(self.stream.inner.as_raw_fd() as usize, cx.waker().clone(), false, true);
+                Handle::current().register_io(self.stream.inner.as_raw_fd() as usize, cx.waker().clone(), false, true);
                 Poll::Pending
             }
             Ok(Some(err)) => {
