@@ -6,7 +6,7 @@ Implementation of a high-performance, work-stealing asynchronous executor and re
 
 The system utilizes a worker-driven reactor model (similar to Tokio/mio). There is no dedicated reactor thread; instead, worker threads drive the I/O event loop themselves when they run out of scheduled tasks.
 
-### 1. Request Lifecycle Overview
+### Request Lifecycle Overview
 
 The following sequence documents how a worker thread transitions from task execution to reactor polling when idle.
 
@@ -38,59 +38,36 @@ sequenceDiagram
     T-->>-W: 10. return Poll::Ready(n)
 ```
 
-### 2. Task Scheduling & Work Stealing
-
-Tasks are distributed via a multi-level queue hierarchy to minimize contention:
-- **LIFO Slot**: A single-task "hot" slot for the most recently woken task (zero-latency).
-- **Local Deque**: A per-worker FIFO/LIFO queue for thread-local tasks.
-- **Global Injector**: A shared lock-free queue for tasks spawned from outside the runtime.
-
-```mermaid
-graph LR
-    subgraph "Worker Thread"
-        L[LIFO Slot]
-        D[Local Deque]
-        P[Parker/Reactor]
-    end
-    subgraph "Global"
-        G[Global Injector]
-    end
-
-    L --- D
-    G -- Pull --- D
-    D -- Idle --- P
-```
-
-### 3. State Management
-
-Task coordination is handled via an `AtomicU8` state machine, ensuring safe transitions between scheduling, polling, and completion.
-
-```mermaid
-stateDiagram-v2
-    [*] --> SCHEDULED
-    SCHEDULED --> POLLING
-    POLLING --> IDLE: Pending
-    POLLING --> COMPLETED: Ready
-    IDLE --> SCHEDULED: Reactor Waker
-```
-
 ## Performance Data
 
-Benchmarks measured using `cargo run --release` with 1024-byte payloads on MacOS. The transition to **Inline Worker Polling** resolved the previous 130 MiB/s single-threaded bottleneck.
+Benchmarks measured using `cargo run --release` with 1024-byte payloads on MacOS. 
 
 | Concurrency | Total Messages | Throughput (MiB/s) | vs. Tokio |
 | :--- | :--- | :--- | :--- |
-| **100** | 500,000 | **165.96** | **1.01x** |
-| **500** | 100,000 | **160.06** | **1.00x** |
-| **1,000** | 100,000 | **142.74** | **0.91x** |
-| **10,000** | 1,000,000 | **84.18** | **0.69x** |
+| **100** | 500,000 | **188.40** | **1.17x** |
+| **250** | 100,000 | **188.40** | **1.17x** |
+| **500** | 100,000 | **178.96** | **1.12x** |
+| **1,000** | 100,000 | **151.95** | **0.95x** |
+| **10,000** | 100,000 | **12.20** | **0.99x** |
 
-### Latency Optimization
-At 100 concurrency, the custom runtime achieves a **P95 Latency of 623 µs**, outperforming Tokio's 775 µs in the same environment. This is attributed to the low-overhead LIFO slot and zero-allocation task pooling.
 
-## Implementation Details
-
-- **Reactor**: Mutex-protected state driven by idle workers via `try_lock/epoll_wait`.
-- **Memory**: Future allocation via Power-of-Two `SegQueue` buckets (Thread-Local + Global).
-- **Timers**: Hashed wheel implementation with $O(1)$ complexity.
-- **I/O**: Level-triggered multiplexing via the `polling` crate.
+Payload: 1024 bytes | Concurrency: 250 | Total: 100000 msgs | Runs: 100
+┌──────────────┬────────────────┬───────────────┬────────────┐
+│ Metric       ┆ Custom Runtime ┆ Tokio Runtime ┆ Rel. Stats │
+╞══════════════╪════════════════╪═══════════════╪════════════╡
+│ Total Time   ┆ 518.33ms       ┆ 607.72ms      ┆ -          │
+├╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┤
+│ Throughput   ┆ 188.40 MiB/s   ┆ 160.69 MiB/s  ┆ 1.17x      │
+├╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┤
+│ Message Rate ┆ 192926 msg/s   ┆ 164550 msg/s  ┆ 1.17x      │
+├╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┤
+│ Avg Latency  ┆ 1.141 ms       ┆ 1.427 ms      ┆ 1.25x      │
+├╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┤
+│ P50 Latency  ┆ 1187 µs        ┆ 1477 µs       ┆ 1.24x      │
+├╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┤
+│ P95 Latency  ┆ 1335 µs        ┆ 1757 µs       ┆ 1.32x      │
+├╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┤
+│ P99 Latency  ┆ 1875 µs        ┆ 1945 µs       ┆ 1.04x      │
+├╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┤
+│ Max Latency  ┆ 3271 µs        ┆ 2715 µs       ┆ 0.83x      │
+└──────────────┴────────────────┴───────────────┴────────────┘
