@@ -4,8 +4,9 @@ use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crossbeam::deque::{Injector, Stealer};
-use crossbeam::queue::SegQueue;
+use crossbeam::queue::ArrayQueue;
 use crossbeam::sync::Unparker;
+use crossbeam::utils::CachePadded;
 use crossbeam_deque::Steal;
 use futures::FutureExt;
 
@@ -22,15 +23,15 @@ pub struct Scheduler {
     /// Unparkers for waking up sleeping workers.
     pub unparkers: Vec<Unparker>,
     /// Tracks the number of workers currently parked.
-    pub sleeping_workers: AtomicUsize,
+    pub sleeping_workers: CachePadded<AtomicUsize>,
     /// Tracks the number of workers currently searching for work (safely throttles notifications).
-    pub searching_workers: AtomicUsize,
+    pub searching_workers: CachePadded<AtomicUsize>,
     /// Round-robin cursor for notifying workers.
-    pub notify_cursor: AtomicUsize,
+    pub notify_cursor: CachePadded<AtomicUsize>,
     /// Shutdown signal.
     pub(crate) shutdown: AtomicBool,
     /// Bucketized task pools for zero-allocation recycling (indexed by power-of-two size).
-    pub task_pools: [Arc<SegQueue<Arc<Task>>>; 11],
+    pub task_pools: [Arc<ArrayQueue<Arc<Task>>>; 11],
     /// Callback to wake the reactor if a worker is blocked polling I/O.
     pub(crate) reactor_notifier: Box<dyn Fn() + Send + Sync>,
 }
@@ -45,11 +46,11 @@ impl Scheduler {
             queue: Arc::new(Injector::new()),
             stealers,
             unparkers,
-            sleeping_workers: AtomicUsize::new(0),
-            searching_workers: AtomicUsize::new(0),
-            notify_cursor: AtomicUsize::new(0),
+            sleeping_workers: CachePadded::new(AtomicUsize::new(0)),
+            searching_workers: CachePadded::new(AtomicUsize::new(0)),
+            notify_cursor: CachePadded::new(AtomicUsize::new(0)),
             shutdown: AtomicBool::new(false),
-            task_pools: std::array::from_fn(|_| Arc::new(SegQueue::new())),
+            task_pools: std::array::from_fn(|_| Arc::new(ArrayQueue::new(1024))),
             reactor_notifier,
         }
     }
@@ -125,8 +126,9 @@ impl Scheduler {
     }
 
     pub(crate) fn notify(&self) {
-        // Only unpark if no one is searching. This significantly reduces kernel transitions.
-        if self.searching_workers.load(Ordering::Acquire) == 0 {
+        // Relaxed threshold: Allow unparking if searching workers < 2.
+        // This prevents the "single searcher" bottleneck during high-load bursts.
+        if self.searching_workers.load(Ordering::Acquire) < 2 {
             let idx = self.notify_cursor.fetch_add(1, Ordering::Relaxed) % self.unparkers.len();
             self.unparkers[idx].unpark();
             // Wake the reactor in case the only available worker is parked inside epoll_wait

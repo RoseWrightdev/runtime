@@ -70,9 +70,9 @@ impl Worker {
             }
 
             // 3. Steal from other workers or global queue if local is empty
-            self.handle.scheduler.searching_workers.fetch_add(1, Ordering::SeqCst);
+            self.handle.scheduler.searching_workers.fetch_add(1, Ordering::Relaxed);
             if let Some(task) = self.steal() {
-                self.handle.scheduler.searching_workers.fetch_sub(1, Ordering::SeqCst);
+                self.handle.scheduler.searching_workers.fetch_sub(1, Ordering::Relaxed);
                 self.execute(task);
                 continue;
             }
@@ -81,13 +81,13 @@ impl Worker {
             let mut found = false;
             for _ in 0..150 {
                 if let Some(task) = self.steal() {
-                    self.handle.scheduler.searching_workers.fetch_sub(1, Ordering::SeqCst);
+                    self.handle.scheduler.searching_workers.fetch_sub(1, Ordering::Relaxed);
                     self.execute(task);
                     found = true;
                     break;
                 }
                 if let Steal::Success(task) = self.handle.scheduler.steal() {
-                    self.handle.scheduler.searching_workers.fetch_sub(1, Ordering::SeqCst);
+                    self.handle.scheduler.searching_workers.fetch_sub(1, Ordering::Relaxed);
                     self.execute(task);
                     found = true;
                     break;
@@ -100,7 +100,17 @@ impl Worker {
             }
 
             // 4. Fallback to parking or reactor polling
-            self.handle.scheduler.searching_workers.fetch_sub(1, Ordering::SeqCst);
+            self.handle.scheduler.searching_workers.fetch_sub(1, Ordering::Relaxed);
+
+            // One final attempt to steal from the global injector if searching count is low.
+            // This mitigates the "last searcher" race where a task is injected just as we park.
+            if self.handle.scheduler.searching_workers.load(Ordering::Acquire) < 2 {
+                if let Steal::Success(task) = self.handle.scheduler.steal() {
+                    self.execute(task);
+                    continue;
+                }
+            }
+
             self.handle.scheduler.sleeping_workers.fetch_add(1, Ordering::Release);
             
             // Try to drive the reactor. If we acquire the lock, we wait for I/O events.
@@ -160,8 +170,9 @@ impl Worker {
                             if pool.len() < 128 {
                                 pool.push(task);
                             } else {
-                                // Fallback to global pool if local is full
-                                self.handle.scheduler.task_pools[idx].push(task);
+                                // Fallback to global pool if local is full.
+                                // If global is ALSO full, the task is dropped and memory is freed.
+                                let _ = self.handle.scheduler.task_pools[idx].push(task);
                             }
                         });
                     }
@@ -201,38 +212,34 @@ impl Worker {
         if local_queue_ptr.is_null() { return None; }
         let local_q = unsafe { &mut *local_queue_ptr };
 
-        // First, try stealing from the global injector in batches (to reduce contention)
-        match self.handle.scheduler.queue.steal_batch_and_pop(local_q) {
-            Steal::Success(task) => return Some(task),
-            Steal::Retry => return self.steal(), // Recursively try again
-            Steal::Empty => {}
-        }
-
         let start = self.fast_rng() as usize;
 
-        // Then, try stealing from other workers
+        // 1. First, try stealing from other workers (Neighbors) to balance load
         let stealers = &self.handle.scheduler.stealers;
-
         let len = stealers.len();
-        if len <= 1 {
-            return None;
+        
+        if len > 1 {
+            let start_idx = start % len;
+            for i in 0..len {
+                let idx = (start_idx + i) % len;
+                if idx == self.id {
+                    continue;
+                }
+
+                // Try to steal in batches from other workers
+                match stealers[idx].steal_batch_and_pop(local_q) {
+                    Steal::Success(task) => return Some(task),
+                    Steal::Retry => continue, // Try next worker
+                    Steal::Empty => continue,
+                }
+            }
         }
 
-        let start_idx = start % len;
-        for i in 0..len {
-            let idx = (start_idx + i) % len;
-            if idx == self.id {
-                continue;
-            }
-
-            // Also try to steal in batches from other workers
-            match stealers[idx].steal_batch_and_pop(local_q) {
-                Steal::Success(task) => return Some(task),
-                Steal::Retry => continue, // Try next worker
-                Steal::Empty => continue,
-            }
+        // 2. Finally, try stealing from the global injector (Fallback)
+        match self.handle.scheduler.queue.steal_batch_and_pop(local_q) {
+            Steal::Success(task) => Some(task),
+            Steal::Retry => self.steal(), // Recursively try again
+            Steal::Empty => None,
         }
-
-        None
     }
 }
