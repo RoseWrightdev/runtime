@@ -31,7 +31,7 @@ sequenceDiagram
 ```
 
 ## Performance Data
-Below is the median result of 100 runs of tokio and the custom runtime
+Below is the median result of 100 runs of tokio and the custom runtime.
 ```
 Payload: 1024 bytes | Concurrency: 250 | Total: 100000 msgs | Runs: 100
 ┌──────────────┬────────────────┬───────────────┬────────────┐
