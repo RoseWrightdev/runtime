@@ -32,10 +32,15 @@ pub struct ReactorState {
 }
 
 pub struct Reactor {
+    // setup
     poller: Poller,
-    registrations: SegQueue<Vec<Registration>>,
-    pub(crate) shutdown: Arc<AtomicBool>,
+
+    //worker -> reactor
+    registrations: CachePadded<SegQueue<Vec<Registration>>>,
     pub(crate) notified: CachePadded<AtomicBool>,
+
+    // poller only
+    pub(crate) shutdown: Arc<AtomicBool>,
     state: Mutex<ReactorState>,
     events: Mutex<Events>,
 }
@@ -44,7 +49,7 @@ impl Reactor {
     pub(crate) fn new() -> Self {
         Self {
             poller: Poller::new().expect("Failed to create Poller"),
-            registrations: SegQueue::new(),
+            registrations: CachePadded::new(SegQueue::new()),
             shutdown: Arc::new(AtomicBool::new(false)),
             notified: CachePadded::new(AtomicBool::new(false)),
             state: Mutex::new(ReactorState {
