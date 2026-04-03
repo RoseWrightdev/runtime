@@ -54,3 +54,34 @@ Payload: 1024 bytes | Concurrency: 250 | Total: 100000 msgs | Runs: 100
 │ Max Latency  ┆ 3271 µs        ┆ 2715 µs       ┆ 0.83x      │
 └──────────────┴────────────────┴───────────────┴────────────┘
 ```
+
+## Usage
+
+The runtime includes a benchmarking tool to compare its performance against Tokio.
+
+```bash
+cargo run --release -- [concurrency] [total_messages] [payload_size] [flags]
+```
+
+### Arguments
+
+| Argument | Description | Default |
+| :--- | :--- | :--- |
+| `concurrency` | Number of concurrent client connections | `50` |
+| `total_messages` | Total number of messages to send across all clients | `10000` |
+| `payload_size` | Size of each message payload in bytes | `65536` |
+
+### Flags
+
+| Flag | Shorthand | Description |
+| :--- | :--- | :--- |
+| `--runs` | `-r` | Number of benchmark runs to perform (reports median) |
+| `--csv` | | Output results in a comma-separated format for scripting |
+
+### Example
+
+To run a benchmark with 250 concurrent connections, 100,000 messages, and 1KB payloads over 10 runs:
+
+```bash
+cargo run --release -- 250 100000 1024 --runs 10
+```
