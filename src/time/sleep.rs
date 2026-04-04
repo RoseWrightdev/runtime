@@ -43,3 +43,29 @@ impl Future for Sleep {
 pub fn sleep(duration: Duration) -> Sleep {
     Sleep::new(duration)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::executor::Runtime;
+    use std::time::Duration;
+
+    #[test]
+    fn test_sleep_basic() {
+        let runtime = Runtime::new();
+        runtime.block_on(async {
+            let start = Instant::now();
+            sleep(Duration::from_millis(50)).await;
+            let elapsed = start.elapsed();
+            assert!(elapsed >= Duration::from_millis(50));
+        });
+    }
+
+    #[test]
+    fn test_sleep_zero() {
+        let runtime = Runtime::new();
+        runtime.block_on(async {
+            sleep(Duration::from_millis(0)).await;
+        });
+    }
+}

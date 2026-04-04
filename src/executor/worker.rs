@@ -3,11 +3,11 @@ use std::{
     task::Context,
 };
 
+use crate::executor::context;
 use crossbeam::deque;
 use crossbeam::sync::Parker;
 use crossbeam_deque::Steal;
 use futures::task::waker_ref;
-use crate::executor::context;
 
 use crate::executor::{
     task::{STATE_IDLE, STATE_POLLING, STATE_SCHEDULED},
@@ -60,7 +60,7 @@ impl Worker {
             if self.handle.scheduler.shutdown.load(Ordering::Acquire) {
                 break;
             }
-            
+
             // --- Cooperative Yielding & Budgeting ---
             // If the budget is exhausted, move a task to the global injector to ensure other
             // workers have a chance to pick it up, preventing this worker from hogging tasks.
@@ -97,10 +97,16 @@ impl Worker {
             }
 
             // 3. Steal from other workers or global queue if local is empty
-            self.handle.scheduler.searching_workers.fetch_add(1, Ordering::Relaxed);
+            self.handle
+                .scheduler
+                .searching_workers
+                .fetch_add(1, Ordering::Relaxed);
             if let Some(task) = self.steal() {
                 prefetch(Arc::as_ptr(&task));
-                self.handle.scheduler.searching_workers.fetch_sub(1, Ordering::Relaxed);
+                self.handle
+                    .scheduler
+                    .searching_workers
+                    .fetch_sub(1, Ordering::Relaxed);
                 self.execute(task);
                 continue;
             }
@@ -110,14 +116,20 @@ impl Worker {
             for _ in 0..150 {
                 if let Some(task) = std::hint::black_box(self.steal()) {
                     prefetch(Arc::as_ptr(&task));
-                    self.handle.scheduler.searching_workers.fetch_sub(1, Ordering::Relaxed);
+                    self.handle
+                        .scheduler
+                        .searching_workers
+                        .fetch_sub(1, Ordering::Relaxed);
                     self.execute(task);
                     found = true;
                     break;
                 }
                 if let Steal::Success(task) = std::hint::black_box(self.handle.scheduler.steal()) {
                     prefetch(Arc::as_ptr(&task));
-                    self.handle.scheduler.searching_workers.fetch_sub(1, Ordering::Relaxed);
+                    self.handle
+                        .scheduler
+                        .searching_workers
+                        .fetch_sub(1, Ordering::Relaxed);
                     self.execute(task);
                     found = true;
                     break;
@@ -130,11 +142,20 @@ impl Worker {
             }
 
             // 4. Fallback to parking or reactor polling
-            self.handle.scheduler.searching_workers.fetch_sub(1, Ordering::Relaxed);
+            self.handle
+                .scheduler
+                .searching_workers
+                .fetch_sub(1, Ordering::Relaxed);
 
             // One final attempt to steal from the global injector if searching count is low.
             // This mitigates the "last searcher" race where a task is injected just as we park.
-            if self.handle.scheduler.searching_workers.load(Ordering::Acquire) < 2 {
+            if self
+                .handle
+                .scheduler
+                .searching_workers
+                .load(Ordering::Acquire)
+                < std::cmp::max(2, num_cpus::get() / 2)
+            {
                 if let Steal::Success(task) = self.handle.scheduler.steal() {
                     prefetch(Arc::as_ptr(&task));
                     self.execute(task);
@@ -142,8 +163,11 @@ impl Worker {
                 }
             }
 
-            self.handle.scheduler.sleeping_workers.fetch_add(1, Ordering::Release);
-            
+            self.handle
+                .scheduler
+                .sleeping_workers
+                .fetch_add(1, Ordering::Release);
+
             // Sync any pending reactor registrations from TLS before waiting
             self.handle.flush_registrations();
 
@@ -154,7 +178,10 @@ impl Worker {
                 self.parker.park();
             }
 
-            self.handle.scheduler.sleeping_workers.fetch_sub(1, Ordering::Release);
+            self.handle
+                .scheduler
+                .sleeping_workers
+                .fetch_sub(1, Ordering::Release);
         }
 
         // Phase 4: Cleanup raw pointer on exit and restore the queue
@@ -249,7 +276,9 @@ impl Worker {
     fn steal(&mut self) -> Option<Arc<Task>> {
         // Find the worker-local queue from thread-local storage safely (for batched stealing)
         let local_queue_ptr = context::LOCAL_QUEUE_PTR.with(|q| q.get());
-        if local_queue_ptr.is_null() { return None; }
+        if local_queue_ptr.is_null() {
+            return None;
+        }
         let local_q = unsafe { &mut *local_queue_ptr };
 
         let start = self.fast_rng() as usize;
@@ -257,7 +286,7 @@ impl Worker {
         // 1. First, try stealing from other workers (Neighbors) to balance load
         let stealers = &self.handle.scheduler.stealers;
         let len = stealers.len();
-        
+
         if len > 1 {
             let start_idx = start % len;
             for i in 0..len {
@@ -281,5 +310,63 @@ impl Worker {
             Steal::Retry => self.steal(), // Recursively try again
             Steal::Empty => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::future::ready;
+    use crate::executor::reactor::Reactor;
+
+    #[test]
+    fn test_worker_new() {
+        let worker = deque::Worker::new_fifo();
+        let reactor = Arc::new(Reactor::new());
+        let reactor_notifier = Box::new(|| {});
+        let scheduler = Arc::new(Scheduler::new(vec![], vec![], reactor_notifier));
+        let handle = Handle::new(scheduler, reactor);
+        let id = 0;
+        let parker = Parker::new();
+        
+        let mut worker_instance = Worker::new(id, worker, handle, parker);
+        assert_eq!(worker_instance.id, 0);
+        assert_eq!(worker_instance.tick, 0);
+        assert_eq!(worker_instance.budget, 128);
+    }
+
+    #[test]
+    fn test_fast_rng() {
+        let worker = deque::Worker::new_fifo();
+        let reactor = Arc::new(Reactor::new());
+        let reactor_notifier = Box::new(|| {});
+        let scheduler = Arc::new(Scheduler::new(vec![], vec![], reactor_notifier));
+        let handle = Handle::new(scheduler, reactor);
+        let mut worker_instance = Worker::new(0, worker, handle, Parker::new());
+        
+        let rng1 = worker_instance.fast_rng();
+        let rng2 = worker_instance.fast_rng();
+        let rng3 = worker_instance.fast_rng();
+        
+        assert_ne!(rng1, rng2);
+        assert_ne!(rng2, rng3);
+    }
+
+    #[test]
+    fn test_execute_task() {
+        let worker = deque::Worker::new_fifo();
+        let reactor = Arc::new(Reactor::new());
+        let reactor_notifier = Box::new(|| {});
+        let scheduler = Arc::new(Scheduler::new(vec![], vec![], reactor_notifier));
+        let handle = Handle::new(scheduler.clone(), reactor);
+        let mut worker_instance = Worker::new(0, worker, handle, Parker::new());
+        
+        let task = Task::new(ready(()), scheduler, None);
+        assert_eq!(task.exec_state.state.load(Ordering::Acquire), STATE_SCHEDULED);
+        
+        worker_instance.execute(task.clone());
+        
+        assert_eq!(worker_instance.budget, 127);
+        assert_eq!(worker_instance.tick, 1);
     }
 }

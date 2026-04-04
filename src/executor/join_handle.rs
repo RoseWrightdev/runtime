@@ -65,3 +65,26 @@ impl<T: Any + Send + 'static> Future for JoinHandle<T> {
         Poll::Pending
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::executor::Runtime;
+
+    #[test]
+    fn test_join_handle_success() {
+        let runtime = Runtime::new();
+        let handle = runtime.spawn(async { 42 });
+        let result = runtime.block_on(handle).unwrap();
+        assert_eq!(result, 42);
+    }
+
+    #[test]
+    fn test_join_handle_panic() {
+        let runtime = Runtime::new();
+        let handle = runtime.spawn(async { 
+            panic!("Task panicked"); 
+        });
+        let result = runtime.block_on(handle);
+        assert!(result.is_err());
+    }
+}

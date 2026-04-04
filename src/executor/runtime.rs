@@ -107,3 +107,29 @@ impl Drop for Runtime {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_runtime_new() {
+        let runtime = Runtime::new();
+        assert!(runtime.workers.len() > 0);
+    }
+
+    #[test]
+    fn test_runtime_block_on() {
+        let runtime = Runtime::new();
+        let result = runtime.block_on(async { 42 });
+        assert_eq!(result, 42);
+    }
+
+    #[test]
+    fn test_runtime_spawn() {
+        let runtime = Runtime::new();
+        let handle = runtime.spawn(async { 100 });
+        let result = runtime.block_on(async move { handle.await.unwrap() });
+        assert_eq!(result, 100);
+    }
+}

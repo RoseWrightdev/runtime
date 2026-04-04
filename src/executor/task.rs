@@ -32,7 +32,7 @@ pub(crate) struct ExecutionState {
 
 pub struct Task {
     pub(crate) future: UnsafeCell<RawFuture>,
-    scheduler: Arc<Scheduler>,
+    pub(crate) scheduler: Arc<Scheduler>,
     pub(crate) exec_state: CachePadded<ExecutionState>,
     pub(crate) join_state: CachePadded<AtomicU8>,
     pub(crate) result: UnsafeCell<Option<Result<Box<dyn Any + Send>, JoinError>>>,
@@ -203,5 +203,39 @@ impl Drop for RawFuture {
             // reset pointer to null
             self.ptr = ptr::null_mut()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_task_new() {
+        let reactor_notifier = Box::new(|| {});
+        let scheduler = Arc::new(Scheduler::new(vec![], vec![], reactor_notifier));
+        let task = Task::new(async {}, scheduler, None);
+        assert_eq!(task.exec_state.state.load(Ordering::Acquire), STATE_SCHEDULED);
+        assert_eq!(task.join_state.load(Ordering::Acquire), JOIN_STATE_RUNNING);
+    }
+
+    #[test]
+    fn test_raw_future_lifecycle() {
+        let raw = RawFuture::new(async { }, None);
+        assert!(!raw.ptr.is_null());
+        // Dropping should happen automatically
+    }
+
+    #[test]
+    fn test_task_reuse() {
+        let reactor_notifier = Box::new(|| {});
+        let scheduler = Arc::new(Scheduler::new(vec![], vec![], reactor_notifier));
+        let task = Task::new(async {}, scheduler, None);
+        
+        // Mark as idle to simulate completion
+        task.exec_state.state.store(STATE_IDLE, Ordering::Release);
+        
+        Task::reuse(&task, async { });
+        assert_eq!(task.exec_state.state.load(Ordering::Acquire), STATE_SCHEDULED);
     }
 }

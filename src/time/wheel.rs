@@ -118,3 +118,62 @@ impl TimerWheel {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::task::noop_waker;
+    use std::time::Duration;
+
+    #[test]
+    fn test_timer_wheel_basic() {
+        let start = Instant::now();
+        let mut wheel = TimerWheel::new(start);
+        let waker = noop_waker();
+        
+        let deadline = start + Duration::from_millis(10);
+        wheel.insert(deadline, waker.clone());
+        
+        // Before 10ms, nothing should expire
+        let expired = wheel.tick(start + Duration::from_millis(5));
+        assert!(expired.is_empty());
+        
+        // At or after 10ms, it should expire
+        let expired = wheel.tick(start + Duration::from_millis(10));
+        assert_eq!(expired.len(), 1);
+    }
+
+    #[test]
+    fn test_timer_wheel_next_expiration() {
+        let start = Instant::now();
+        let mut wheel = TimerWheel::new(start);
+        let waker = noop_waker();
+        
+        assert!(wheel.next_expiration().is_none());
+        
+        let d1 = start + Duration::from_millis(100);
+        let d2 = start + Duration::from_millis(50);
+        wheel.insert(d1, waker.clone());
+        wheel.insert(d2, waker.clone());
+        
+        assert_eq!(wheel.next_expiration(), Some(d2));
+    }
+
+    #[test]
+    fn test_timer_wheel_cascade() {
+        let start = Instant::now();
+        let mut wheel = TimerWheel::new(start);
+        let waker = noop_waker();
+        
+        // Level 1 starts at 64ms. Level 2 starts at 4096ms.
+        let long_deadline = start + Duration::from_millis(5000);
+        wheel.insert(long_deadline, waker.clone());
+        
+        // Advance to just before expiration
+        let _ = wheel.tick(start + Duration::from_millis(4999));
+        
+        // Expire
+        let expired = wheel.tick(start + Duration::from_millis(5000));
+        assert_eq!(expired.len(), 1);
+    }
+}

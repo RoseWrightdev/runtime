@@ -132,8 +132,11 @@ impl Scheduler {
         // Relaxed threshold: Allow unparking if searching workers < 2.
         // This prevents the "single searcher" bottleneck during high-load bursts.
         if self.searching_workers.load(Ordering::Acquire) < 2 {
-            let idx = self.notify_cursor.fetch_add(1, Ordering::Relaxed) % self.unparkers.len();
-            self.unparkers[idx].unpark();
+            let num_unparkers = self.unparkers.len();
+            if num_unparkers > 0 {
+                let idx = self.notify_cursor.fetch_add(1, Ordering::Relaxed) % num_unparkers;
+                self.unparkers[idx].unpark();
+            }
             // Wake the reactor in case the only available worker is parked inside epoll_wait
             (self.reactor_notifier)();
         }
@@ -155,5 +158,134 @@ impl Scheduler {
         }
         let size = std::cmp::max(32, layout.size().next_power_of_two());
         Some((size.trailing_zeros() as usize) - 5)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::future::ready;
+
+    #[test]
+    fn test_pool_index() {
+        assert_eq!(Scheduler::pool_index(std::alloc::Layout::new::<[u8; 0]>()), None);
+        assert_eq!(Scheduler::pool_index(std::alloc::Layout::new::<[u8; 32]>()), Some(0));
+        assert_eq!(Scheduler::pool_index(std::alloc::Layout::new::<[u8; 64]>()), Some(1));
+        assert_eq!(Scheduler::pool_index(std::alloc::Layout::new::<[u8; 32768]>()), Some(10));
+        assert_eq!(Scheduler::pool_index(std::alloc::Layout::new::<[u8; 32769]>()), None);
+        assert_eq!(Scheduler::pool_index(std::alloc::Layout::from_size_align(32, 32).unwrap()), None);
+    }
+
+    #[test]
+    fn test_scheduler_new() {
+        let reactor_notifier = Box::new(|| {});
+        let scheduler = Scheduler::new(vec![], vec![], reactor_notifier);
+        assert_eq!(scheduler.unparkers.len(), 0);
+        assert_eq!(scheduler.shutdown.load(Ordering::SeqCst), false);
+    }
+
+    #[test]
+    fn test_inject_and_steal() {
+        let reactor_notifier = Box::new(|| {});
+        let scheduler = Arc::new(Scheduler::new(vec![], vec![], reactor_notifier));
+        let task = Task::new(ready(()), scheduler.clone(), None);
+        
+        scheduler.inject(task.clone());
+        let stolen = scheduler.steal();
+        match stolen {
+            crossbeam_deque::Steal::Success(t) => assert_eq!(Arc::as_ptr(&t), Arc::as_ptr(&task)),
+            _ => panic!("Failed to steal task"),
+        }
+    }
+
+    #[test]
+    fn test_notify_logic() {
+        let notified = Arc::new(AtomicBool::new(false));
+        let notified_clone = notified.clone();
+        let reactor_notifier = Box::new(move || {
+            notified_clone.store(true, Ordering::SeqCst);
+        });
+        
+        let parker1 = crossbeam::sync::Parker::new();
+        let unparker1 = parker1.unparker().clone();
+        let parker2 = crossbeam::sync::Parker::new();
+        let unparker2 = parker2.unparker().clone();
+        let scheduler = Scheduler::new(vec![], vec![unparker1, unparker2], reactor_notifier);
+        
+        // Initial cursor is 0
+        scheduler.searching_workers.store(0, Ordering::SeqCst);
+        scheduler.notify();
+        assert!(notified.load(Ordering::SeqCst));
+        assert_eq!(scheduler.notify_cursor.load(Ordering::SeqCst), 1);
+        
+        notified.store(false, Ordering::SeqCst);
+        scheduler.notify();
+        assert!(notified.load(Ordering::SeqCst));
+        assert_eq!(scheduler.notify_cursor.load(Ordering::SeqCst), 2);
+        
+        notified.store(false, Ordering::SeqCst);
+        scheduler.searching_workers.store(2, Ordering::SeqCst);
+        scheduler.notify();
+        assert!(!notified.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_spawn_and_reuse() {
+        let reactor_notifier = Box::new(|| {});
+        let scheduler = Arc::new(Scheduler::new(vec![], vec![], reactor_notifier));
+        
+        // 1. Basic spawn
+        let _handle = scheduler.spawn(async { 42 });
+        assert!(matches!(scheduler.steal(), crossbeam_deque::Steal::Success(_)));
+
+        // 2. Reuse via LOCAL_TASK_POOL
+        let layout = std::alloc::Layout::new::<[u8; 32]>();
+        let idx = Scheduler::pool_index(layout).unwrap();
+        
+        let dummy_task = Task::new(async {}, scheduler.clone(), Some(layout));
+        crate::executor::context::LOCAL_TASK_POOL.with(|p| {
+            p[idx].borrow_mut().push(dummy_task.clone());
+        });
+
+        let reused_task = scheduler.spawn_internal_ref(async {});
+        assert!(Arc::ptr_eq(&reused_task, &dummy_task));
+        assert!(matches!(scheduler.steal(), crossbeam_deque::Steal::Success(_)));
+
+        // 3. Fallback to global task_pools
+        let dummy_task_global = Task::new(async {}, scheduler.clone(), Some(layout));
+        let _ = scheduler.task_pools[idx].push(dummy_task_global.clone());
+        
+        let reused_task_global = scheduler.spawn_internal_ref(async {});
+        assert!(Arc::ptr_eq(&reused_task_global, &dummy_task_global));
+        assert!(matches!(scheduler.steal(), crossbeam_deque::Steal::Success(_)));
+    }
+
+    #[test]
+    fn test_pool_index_boundaries() {
+        // Alignment > 16 should return None
+        assert_eq!(Scheduler::pool_index(std::alloc::Layout::from_size_align(32, 32).unwrap()), None);
+        // Size > 32768 should return None
+        assert_eq!(Scheduler::pool_index(std::alloc::Layout::from_size_align(32769, 16).unwrap()), None);
+        
+        // Powers of two mapping
+        assert_eq!(Scheduler::pool_index(std::alloc::Layout::new::<[u8; 32]>()), Some(0)); // 32
+        assert_eq!(Scheduler::pool_index(std::alloc::Layout::new::<[u8; 33]>()), Some(1)); // 64
+        assert_eq!(Scheduler::pool_index(std::alloc::Layout::new::<[u8; 64]>()), Some(1));
+        assert_eq!(Scheduler::pool_index(std::alloc::Layout::new::<[u8; 65]>()), Some(2)); // 128
+    }
+
+    #[test]
+    fn test_inject_notifications() {
+        let notified = Arc::new(AtomicBool::new(false));
+        let notified_clone = notified.clone();
+        let reactor_notifier = Box::new(move || {
+            notified_clone.store(true, Ordering::SeqCst);
+        });
+        
+        let scheduler = Arc::new(Scheduler::new(vec![], vec![], reactor_notifier));
+        let task = Task::new(async {}, scheduler.clone(), None);
+        
+        scheduler.inject(task);
+        assert!(notified.load(Ordering::SeqCst));
     }
 }

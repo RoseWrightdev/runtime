@@ -213,3 +213,36 @@ impl Reactor {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::task::noop_waker;
+
+    #[test]
+    fn test_reactor_new() {
+        let reactor = Reactor::new();
+        assert!(!reactor.notified.load(Ordering::SeqCst));
+        assert!(!reactor.shutdown.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_push_batch() {
+        let reactor = Reactor::new();
+        let waker = noop_waker();
+        let reg = Registration::IO { key: 1, waker, read: true, write: false };
+        reactor.push_batch(vec![reg]);
+        assert!(reactor.notified.load(Ordering::SeqCst));
+        assert!(!reactor.registrations.is_empty());
+    }
+
+    #[test]
+    fn test_notify() {
+        let reactor = Reactor::new();
+        reactor.notify();
+        assert!(reactor.notified.load(Ordering::SeqCst));
+        // Second notify should not change state but also not panic/error
+        reactor.notify();
+        assert!(reactor.notified.load(Ordering::SeqCst));
+    }
+}

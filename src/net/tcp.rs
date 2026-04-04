@@ -217,3 +217,45 @@ impl Future for ConnectFuture<'_> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::executor::Runtime;
+
+    #[test]
+    fn test_async_tcp_bind_and_local_addr() {
+        let runtime = Runtime::new();
+        runtime.block_on(async {
+            let listener = AsyncTcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            assert_eq!(addr.ip(), std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)));
+            assert!(addr.port() > 0);
+        });
+    }
+
+    #[test]
+    fn test_async_tcp_connect_and_transmit() {
+        let runtime = Runtime::new();
+        runtime.block_on(async {
+            let listener = AsyncTcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+
+            let handle = crate::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut buf = [0u8; 11];
+                stream.read(&mut buf).await.unwrap();
+                assert_eq!(&buf, b"hello world");
+                stream.write_all(b"foobar").await.unwrap();
+            });
+
+            let client = AsyncTcpStream::connect(addr).await.unwrap();
+            client.write_all(b"hello world").await.unwrap();
+            let mut buf = [0u8; 6];
+            client.read(&mut buf).await.unwrap();
+            assert_eq!(&buf, b"foobar");
+
+            handle.await.unwrap();
+        });
+    }
+}
