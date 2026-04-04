@@ -12,6 +12,7 @@ use futures::FutureExt;
 
 use crate::executor::Task;
 use crate::executor::join_handle::JoinHandle;
+use crate::executor::context::CURRENT_TASK;
 
 /// Coordinates and distributes tasks accross all worker threads
 /// uses `crossbeam::deque::Injector`
@@ -65,7 +66,9 @@ impl Scheduler {
             let res = std::panic::AssertUnwindSafe(future).catch_unwind().await;
             
             // Get our own task header to write the result
-            let task = crate::executor::context::CURRENT_TASK.with(|c| c.borrow().clone().expect("Task executed outside of context"));
+            let task = CURRENT_TASK.with(|c| 
+                c.borrow().clone().expect("Task executed outside of context")
+            );
 
             // Type-erased result storage
             let boxed_res = res.map(|val| Box::new(val) as Box<dyn Any + Send>);
@@ -95,14 +98,14 @@ impl Scheduler {
                 p[idx].borrow_mut().pop()
             });
             if let Some(task) = local_task {
-                crate::executor::task::Task::reuse(&task, future);
+                Task::reuse(&task, future);
                 self.inject(task.clone());
                 return task;
             }
 
             // 2. Fallback to Global pool
             if let Some(task) = self.task_pools[idx].pop() {
-                crate::executor::task::Task::reuse(&task, future);
+                Task::reuse(&task, future);
                 self.inject(task.clone());
                 return task;
             }

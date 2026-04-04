@@ -43,6 +43,7 @@ pub struct Reactor {
     pub(crate) shutdown: Arc<AtomicBool>,
     state: Mutex<ReactorState>,
     events: Mutex<Events>,
+    is_polling: AtomicBool,
 }
 
 impl Reactor {
@@ -58,6 +59,7 @@ impl Reactor {
                 timer_wheel: TimerWheel::new(Instant::now()),
             }),
             events: Mutex::new(Events::new()),
+            is_polling: AtomicBool::new(false),
         }
     }
 
@@ -93,111 +95,121 @@ impl Reactor {
     }
 
     /// Attempts to poll the reactor if no other worker is currently polling.
-    /// Returns true if it successfully acquired the lock and polled, false otherwise.
     pub(crate) fn try_poll(&self) -> bool {
-        if let Ok(mut state) = self.state.try_lock() {
-            if self.shutdown.load(Ordering::Acquire) {
-                return false;
+        // Only one worker can be the Pollster at a time.
+        if self.is_polling.swap(true, Ordering::Acquire) {
+            return false;
+        }
+
+        // Use a guard to ensure is_polling is reset even on panic
+        struct PollGuard<'a>(&'a AtomicBool);
+        impl Drop for PollGuard<'_> {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::Release);
             }
+        }
+        let _guard = PollGuard(&self.is_polling);
 
-            // 1. Drain registration queue into local state
-            while let Some(batch) = self.registrations.pop() {
-                for reg in batch {
-                    match reg {
-                        Registration::IO { key, waker, read, write } => {
-                            let slot = if key < 1024 {
-                                state.hot_slots[key].get_or_insert((None, None))
-                            } else {
-                                state.cold_slots.entry(key).or_insert((None, None))
-                            };
-                            
-                            if read { slot.0 = Some(waker.clone()); }
-                            if write { slot.1 = Some(waker.clone()); }
+        if self.shutdown.load(Ordering::Acquire) {
+            return false;
+        }
 
+        // 1. Process registrations
+        let mut state = self.state.lock().unwrap();
+        self.handle_registrations(&mut state);
+
+        // 2. Wait for OS events - we drop the state lock during kernel wait
+        let mut events = self.events.lock().unwrap();
+        events.clear();
+
+        let timeout = state.timer_wheel.next_expiration().map(|deadline| {
+            deadline.saturating_duration_since(Instant::now())
+        });
+
+        // Release state lock so other workers can check or push
+        drop(state);
+
+        self.notified.store(false, Ordering::SeqCst);
+        let _ = self.poller.wait(&mut events, timeout);
+
+        // 3. Re-acquire state lock to dispatch events and handle any new registrations
+        let mut state = self.state.lock().unwrap();
+        
+        // Final drain of registrations before dispatching events
+        self.handle_registrations(&mut state);
+
+        for ev in events.iter() {
+            let slot = if ev.key < 1024 {
+                state.hot_slots[ev.key].as_mut()
+            } else {
+                state.cold_slots.get_mut(&ev.key)
+            };
+
+            if let Some(slot) = slot {
+                if ev.readable {
+                    if let Some(w) = slot.0.take() { w.wake(); }
+                }
+                if ev.writable {
+                    if let Some(w) = slot.1.take() { w.wake(); }
+                }
+            }
+        }
+
+        // Tick timer wheel and dispatch
+        let expired = state.timer_wheel.tick(Instant::now());
+        for waker in expired {
+            waker.wake();
+        }
+
+        // Last-second check for registrations before releasing the lock and guard
+        self.handle_registrations(&mut state);
+
+        true
+    }
+
+    fn handle_registrations(&self, state: &mut ReactorState) {
+        while let Some(batch) = self.registrations.pop() {
+            for reg in batch {
+                match reg {
+                    Registration::IO { key, waker, read, write } => {
+                        let slot = if key < 1024 {
+                            state.hot_slots[key].get_or_insert((None, None))
+                        } else {
+                            state.cold_slots.entry(key).or_insert((None, None))
+                        };
+                        
+                        let mut changed = false;
+                        if read && slot.0.is_none() { 
+                            slot.0 = Some(waker.clone());
+                            changed = true;
+                        }
+                        if write && slot.1.is_none() { 
+                            slot.1 = Some(waker.clone());
+                            changed = true;
+                        }
+
+                        if changed {
                             let mut interest = Event::none(key);
                             interest.readable = slot.0.is_some();
                             interest.writable = slot.1.is_some();
-
                             unsafe {
                                 let fd = std::os::unix::io::BorrowedFd::borrow_raw(key as std::os::unix::io::RawFd);
                                 let _ = self.poller.modify(fd, interest);
                             }
                         }
-                        Registration::Timer { deadline, waker } => {
-                            state.timer_wheel.insert(deadline, waker);
-                        }
-                        Registration::Delete { key } => {
-                            if key < 1024 {
-                                state.hot_slots[key] = None;
-                            } else {
-                                state.cold_slots.remove(&key);
-                            }
-                        }
                     }
-                }
-            }
-
-            // 2. Wait for OS events or Timer expiration
-            let mut events = self.events.lock().unwrap();
-            events.clear();
-
-            let timeout = state.timer_wheel.next_expiration().map(|deadline| {
-                deadline.saturating_duration_since(Instant::now())
-            });
-
-            // Clear notified flag BEFORE waiting to ensure we catch any notifications during wait
-            self.notified.store(false, Ordering::SeqCst);
-            // Block inside epoll_wait while holding the Mutex lock
-            let _ = self.poller.wait(&mut events, timeout);
-
-            // 3. Dispatch I/O events
-            for ev in events.iter() {
-                let slot = if ev.key < 1024 {
-                    state.hot_slots[ev.key].as_mut()
-                } else {
-                    state.cold_slots.get_mut(&ev.key)
-                };
-
-                if let Some(slot) = slot {
-                    let mut r_waker = None;
-                    let mut w_waker = None;
-                    
-                    if ev.readable { r_waker = slot.0.take(); }
-                    if ev.writable { w_waker = slot.1.take(); }
-
-                    // Direct wake
-                    if let Some(w) = r_waker { w.wake(); }
-                    if let Some(w) = w_waker { w.wake(); }
-
-                    // Clear triggered interest in poller
-                    let mut interest = Event::none(ev.key);
-                    interest.readable = slot.0.is_some();
-                    interest.writable = slot.1.is_some();
-
-                    unsafe {
-                        let fd = std::os::unix::io::BorrowedFd::borrow_raw(ev.key as std::os::unix::io::RawFd);
-                        let _ = self.poller.modify(fd, interest);
+                    Registration::Timer { deadline, waker } => {
+                        state.timer_wheel.insert(deadline, waker);
                     }
-
-                    if slot.0.is_none() && slot.1.is_none() {
-                        if ev.key < 1024 {
-                            state.hot_slots[ev.key] = None;
+                    Registration::Delete { key } => {
+                        if key < 1024 {
+                            state.hot_slots[key] = None;
                         } else {
-                            state.cold_slots.remove(&ev.key);
+                            state.cold_slots.remove(&key);
                         }
                     }
                 }
             }
-
-            // 4. Tick the timer wheel and dispatch expired timers
-            let expired = state.timer_wheel.tick(Instant::now());
-            for waker in expired {
-                waker.wake();
-            }
-
-            return true;
         }
-        
-        false
     }
 }
