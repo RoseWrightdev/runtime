@@ -1,6 +1,6 @@
 # Async Runtime
 
-Implementation of a high-performance, work-stealing asynchronous executor and reactor in Rust. It outperforms Tokio in low concurency workflows (250~ connections) by 1.17x do to its greedy design and unfair work stealing algorithm. 
+Implementation of a high-performance, work-stealing asynchronous executor and reactor in Rust. It outperforms Tokio in low concurency workflows (250~ connections) by 1.36x do to its greedy design and unfair work stealing algorithm. 
 
 ```mermaid
 sequenceDiagram
@@ -33,25 +33,25 @@ sequenceDiagram
 ## Performance Data
 Below is the median result of 100 runs of tokio and the custom runtime.
 ```
-Payload: 1024 bytes | Concurrency: 250 | Total: 100000 msgs | Runs: 100
+Payload: 1024 bytes | Concurrency: 250 | Total: 1000000 msgs | Runs: 100
 ┌──────────────┬────────────────┬───────────────┬────────────┐
 │ Metric       ┆ Custom Runtime ┆ Tokio Runtime ┆ Rel. Stats │
 ╞══════════════╪════════════════╪═══════════════╪════════════╡
-│ Total Time   ┆ 518.33ms       ┆ 607.72ms      ┆ 1.17x      │
+│ Total Time   ┆ 4.41s          ┆ 6.01s         ┆ -          │
 ├╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┤
-│ Throughput   ┆ 188.40 MiB/s   ┆ 160.69 MiB/s  ┆ 1.17x      │
+│ Throughput   ┆ 221.50 MiB/s   ┆ 162.36 MiB/s  ┆ 1.36x      │
 ├╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┤
-│ Message Rate ┆ 192926 msg/s   ┆ 164550 msg/s  ┆ 1.17x      │
+│ Message Rate ┆ 226812 msg/s   ┆ 166258 msg/s  ┆ 1.36x      │
 ├╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┤
-│ Avg Latency  ┆ 1.141 ms       ┆ 1.427 ms      ┆ 1.25x      │
+│ Avg Latency  ┆ 1.090 ms       ┆ 1.495 ms      ┆ 1.37x      │
 ├╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┤
-│ P50 Latency  ┆ 1187 µs        ┆ 1477 µs       ┆ 1.24x      │
+│ P50 Latency  ┆ 1082 µs        ┆ 1485 µs       ┆ 1.37x      │
 ├╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┤
-│ P95 Latency  ┆ 1335 µs        ┆ 1757 µs       ┆ 1.32x      │
+│ P95 Latency  ┆ 1227 µs        ┆ 1748 µs       ┆ 1.42x      │
 ├╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┤
-│ P99 Latency  ┆ 1875 µs        ┆ 1945 µs       ┆ 1.04x      │
+│ P99 Latency  ┆ 1489 µs        ┆ 1916 µs       ┆ 1.29x      │
 ├╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┤
-│ Max Latency  ┆ 3271 µs        ┆ 2715 µs       ┆ 0.83x      │
+│ Max Latency  ┆ 3320 µs        ┆ 3817 µs       ┆ 1.15x      │
 └──────────────┴────────────────┴───────────────┴────────────┘
 ```
 
