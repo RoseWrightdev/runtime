@@ -1,6 +1,6 @@
 # Async Runtime
 
-Implementation of a high-performance, work-stealing asynchronous executor and reactor in Rust. It outperforms Tokio in low concurency workflows (250~ connections) by 1.36x do to its greedy design and unfair work stealing algorithm. 
+Implementation of a high-performance, work-stealing asynchronous executor and reactor in Rust. It outperforms Tokio in low concurency workflows (250~ connections) by 1.36x due to its greedy design and unfair work stealing algorithm. 
 
 ```mermaid
 sequenceDiagram
