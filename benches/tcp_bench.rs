@@ -52,20 +52,20 @@ fn aggregate_median(mut results: Vec<BenchResults>) -> BenchResults {
     let mut p99s: Vec<u64> = results.iter().map(|r| r.p99).collect();
     let mut maxs: Vec<u64> = results.iter().map(|r| r.max).collect();
 
-    fn median_f64(values: &mut Vec<f64>) -> f64 {
+    fn median_f64(values: &mut [f64]) -> f64 {
         values.sort_by(|a, b| a.partial_cmp(b).expect("NaN in results"));
         let mid = values.len() / 2;
-        if values.len() % 2 == 0 {
+        if values.len().is_multiple_of(2) {
             (values[mid - 1] + values[mid]) / 2.0
         } else {
             values[mid]
         }
     }
 
-    fn median_u64(values: &mut Vec<u64>) -> u64 {
+    fn median_u64(values: &mut [u64]) -> u64 {
         values.sort();
         let mid = values.len() / 2;
-        if values.len() % 2 == 0 {
+        if values.len().is_multiple_of(2) {
             (values[mid - 1] + values[mid]) / 2
         } else {
             values[mid]
@@ -173,23 +173,21 @@ fn load_baselines() -> HashMap<usize, BenchResults> {
     };
 
     let reader = BufReader::new(file);
-    for line in reader.lines().skip(1) { // Skip header
-        if let Ok(l) = line {
-            let parts: Vec<&str> = l.split(',').collect();
-            if parts.len() >= 8 {
-                let concurrency = parts[0].trim().parse().unwrap_or(0);
-                let res = BenchResults {
-                    duration: Duration::ZERO,
-                    throughput: parts[1].trim().parse().unwrap_or(0.0),
-                    msg_rate: parts[2].trim().parse().unwrap_or(0.0),
-                    avg: parts[3].trim().parse().unwrap_or(0.0),
-                    p50: parts[4].trim().parse().unwrap_or(0),
-                    p95: parts[5].trim().parse().unwrap_or(0),
-                    p99: parts[6].trim().parse().unwrap_or(0),
-                    max: parts[7].trim().parse().unwrap_or(0),
-                };
-                baselines.insert(concurrency, res);
-            }
+    for l in reader.lines().skip(1).flatten() { // Skip header
+        let parts: Vec<&str> = l.split(',').collect();
+        if parts.len() >= 8 {
+            let concurrency = parts[0].trim().parse().unwrap_or(0);
+            let res = BenchResults {
+                duration: Duration::ZERO,
+                throughput: parts[1].trim().parse().unwrap_or(0.0),
+                msg_rate: parts[2].trim().parse().unwrap_or(0.0),
+                avg: parts[3].trim().parse().unwrap_or(0.0),
+                p50: parts[4].trim().parse().unwrap_or(0),
+                p95: parts[5].trim().parse().unwrap_or(0),
+                p99: parts[6].trim().parse().unwrap_or(0),
+                max: parts[7].trim().parse().unwrap_or(0),
+            };
+            baselines.insert(concurrency, res);
         }
     }
     baselines

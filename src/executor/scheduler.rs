@@ -181,7 +181,7 @@ mod tests {
         let reactor_notifier = Box::new(|| {});
         let scheduler = Scheduler::new(vec![], vec![], reactor_notifier);
         assert_eq!(scheduler.unparkers.len(), 0);
-        assert_eq!(scheduler.shutdown.load(Ordering::SeqCst), false);
+        assert!(!scheduler.shutdown.load(Ordering::SeqCst));
     }
 
     #[test]

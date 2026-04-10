@@ -99,20 +99,20 @@ fn aggregate_median(mut results: Vec<BenchResults>) -> BenchResults {
     let mut p99s: Vec<u64> = results.iter().map(|r| r.p99).collect();
     let mut maxs: Vec<u64> = results.iter().map(|r| r.max).collect();
 
-    fn median_f64(values: &mut Vec<f64>) -> f64 {
+    fn median_f64(values: &mut [f64]) -> f64 {
         values.sort_by(|a, b| a.partial_cmp(b).expect("NaN in results"));
         let mid = values.len() / 2;
-        if values.len() % 2 == 0 {
+        if values.len().is_multiple_of(2) {
             (values[mid - 1] + values[mid]) / 2.0
         } else {
             values[mid]
         }
     }
 
-    fn median_u64(values: &mut Vec<u64>) -> u64 {
+    fn median_u64(values: &mut [u64]) -> u64 {
         values.sort();
         let mid = values.len() / 2;
-        if values.len() % 2 == 0 {
+        if values.len().is_multiple_of(2) {
             (values[mid - 1] + values[mid]) / 2
         } else {
             values[mid]

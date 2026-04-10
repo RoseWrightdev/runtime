@@ -115,7 +115,7 @@ mod tests {
     #[test]
     fn test_runtime_new() {
         let runtime = Runtime::new();
-        assert!(runtime.workers.len() > 0);
+        assert!(!runtime.workers.is_empty());
     }
 
     #[test]

@@ -68,7 +68,11 @@ impl Task {
         unsafe {
             let raw = &mut *arc_self.future.get();
             raw.recondition(future);
+            *arc_self.join_waker.get() = None;
+            *arc_self.result.get() = None;
         }
+        arc_self.exec_state.lifo_count.store(0, Ordering::Relaxed);
+        arc_self.join_state.store(JOIN_STATE_RUNNING, Ordering::Release);
         arc_self.exec_state.state.store(STATE_SCHEDULED, Ordering::Release);
     }
 }

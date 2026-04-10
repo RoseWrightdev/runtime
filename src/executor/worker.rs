@@ -206,9 +206,8 @@ impl Worker {
             // Transition from SCHEDULED to POLLING.
             let future = unsafe { &mut *task.future.get() };
 
-            // Decrement budget and reset task-local LIFO count upon execution
+            // Decrement budget upon execution
             self.budget = self.budget.saturating_sub(1);
-            task.exec_state.lifo_count.store(0, Ordering::Relaxed);
 
             // Register this as the current task to allow self-referencing (for JoinHandle result writing)
             context::CURRENT_TASK.with(|c| *c.borrow_mut() = Some(task.clone()));
