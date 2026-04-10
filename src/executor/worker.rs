@@ -61,132 +61,129 @@ impl Worker {
                 break;
             }
 
-            // --- Cooperative Yielding & Budgeting ---
-            // If the budget is exhausted, move a task to the global injector to ensure other
-            // workers have a chance to pick it up, preventing this worker from hogging tasks.
-            if self.budget == 0 {
-                self.budget = 128;
-                let task = context::LIFO_SLOT
-                    .with(|slot| slot.borrow_mut().take())
-                    .or_else(|| queue.pop());
+            self.cooperative_yield(&mut queue);
 
-                if let Some(task) = task {
-                    self.handle.scheduler.inject(task);
-                }
+            if let Some(task) = self.next_local_task(&mut queue) {
+                self.execute(task);
+                continue;
             }
 
-            // 0. Check LIFO slot for highest priority task (woken by the same thread)
-            let task = context::LIFO_SLOT.with(|slot| slot.borrow_mut().take());
+            self.search_and_park();
+        }
+
+        // Cleanup raw pointer on exit and restore the queue
+        context::LOCAL_QUEUE_PTR.with(|q| q.set(std::ptr::null_mut()));
+        self.queue = Some(queue);
+    }
+
+    fn cooperative_yield(&mut self, queue: &mut deque::Worker<Arc<Task>>) {
+        // If the budget is exhausted, move a task to the global injector to ensure other
+        // workers have a chance to pick it up, preventing this worker from hogging tasks.
+        if self.budget == 0 {
+            self.budget = 128;
+            let task = context::LIFO_SLOT
+                .with(|slot| slot.borrow_mut().take())
+                .or_else(|| queue.pop());
+
             if let Some(task) = task {
-                self.execute(task);
-                continue;
+                self.handle.scheduler.inject(task);
             }
+        }
+    }
 
-            // 1. Pop from local queue (ZERO-OVERHEAD path)
-            if let Some(task) = queue.pop() {
-                self.execute(task);
-                continue;
+    fn next_local_task(&mut self, queue: &mut deque::Worker<Arc<Task>>) -> Option<Arc<Task>> {
+        // 1. Check LIFO slot for highest priority task (woken by the same thread)
+        let task = context::LIFO_SLOT.with(|slot| slot.borrow_mut().take());
+        if task.is_some() {
+            return task;
+        }
+
+        // 2. Pop from local queue
+        if let Some(task) = queue.pop() {
+            return Some(task);
+        }
+
+        // 3. Periodically steal from global queue to ensure fairness
+        if self.tick % 61 == 0 {
+            if let Steal::Success(task) = self.handle.scheduler.steal() {
+                return Some(task);
             }
+        }
 
-            // 2. Periodically steal from global queue to ensure fairness
-            if self.tick % 61 == 0 {
-                if let Steal::Success(task) = self.handle.scheduler.steal() {
-                    self.execute(task);
-                    continue;
-                }
-            }
+        None
+    }
 
-            // 3. Steal from other workers or global queue if local is empty
+    fn search_and_park(&mut self) {
+        // 4. Steal from other workers or global queue if local is empty        
+        self.handle.scheduler.searching_workers.fetch_add(1, Ordering::Relaxed);
+        if let Some(task) = self.steal() {
+            prefetch(Arc::as_ptr(&task));
             self.handle
                 .scheduler
                 .searching_workers
-                .fetch_add(1, Ordering::Relaxed);
-            if let Some(task) = self.steal() {
+                .fetch_sub(1, Ordering::Relaxed);
+            self.execute(task);
+            return;
+        }
+
+        // If still no work, try a short spin-loop before parking.
+        for _ in 0..150 {
+            if let Some(task) = std::hint::black_box(self.steal()) {
                 prefetch(Arc::as_ptr(&task));
                 self.handle
                     .scheduler
                     .searching_workers
                     .fetch_sub(1, Ordering::Relaxed);
                 self.execute(task);
-                continue;
+                return;
             }
-
-            // If still no work, try a short spin-loop before parking.
-            let mut found = false;
-            for _ in 0..150 {
-                if let Some(task) = std::hint::black_box(self.steal()) {
-                    prefetch(Arc::as_ptr(&task));
-                    self.handle
-                        .scheduler
-                        .searching_workers
-                        .fetch_sub(1, Ordering::Relaxed);
-                    self.execute(task);
-                    found = true;
-                    break;
-                }
-                if let Steal::Success(task) = std::hint::black_box(self.handle.scheduler.steal()) {
-                    prefetch(Arc::as_ptr(&task));
-                    self.handle
-                        .scheduler
-                        .searching_workers
-                        .fetch_sub(1, Ordering::Relaxed);
-                    self.execute(task);
-                    found = true;
-                    break;
-                }
-                std::hint::spin_loop();
+            if let Steal::Success(task) = std::hint::black_box(self.handle.scheduler.steal()) {
+                prefetch(Arc::as_ptr(&task));
+                self.handle
+                    .scheduler
+                    .searching_workers
+                    .fetch_sub(1, Ordering::Relaxed);
+                self.execute(task);
+                return;
             }
-
-            if found {
-                continue;
-            }
-
-            // 4. Fallback to parking or reactor polling
-            self.handle
-                .scheduler
-                .searching_workers
-                .fetch_sub(1, Ordering::Relaxed);
-
-            // One final attempt to steal from the global injector if searching count is low.
-            // This mitigates the "last searcher" race where a task is injected just as we park.
-            if self
-                .handle
-                .scheduler
-                .searching_workers
-                .load(Ordering::Acquire)
-                < std::cmp::max(2, num_cpus::get() / 2)
-            {
-                if let Steal::Success(task) = self.handle.scheduler.steal() {
-                    prefetch(Arc::as_ptr(&task));
-                    self.execute(task);
-                    continue;
-                }
-            }
-
-            self.handle
-                .scheduler
-                .sleeping_workers
-                .fetch_add(1, Ordering::Release);
-
-            // Sync any pending reactor registrations from TLS before waiting
-            self.handle.flush_registrations();
-
-            // Try to drive the reactor. If we acquire the lock, we wait for I/O events.
-            // If another worker is already driving it, we simply park.
-            if !self.handle.reactor.try_poll() {
-                self.handle.flush_registrations();
-                self.parker.park();
-            }
-
-            self.handle
-                .scheduler
-                .sleeping_workers
-                .fetch_sub(1, Ordering::Release);
+            std::hint::spin_loop();
         }
 
-        // Phase 4: Cleanup raw pointer on exit and restore the queue
-        context::LOCAL_QUEUE_PTR.with(|q| q.set(std::ptr::null_mut()));
-        self.queue = Some(queue);
+        // 4. Fallback to parking or reactor polling
+        self.handle.scheduler.searching_workers.fetch_sub(1, Ordering::Relaxed);
+
+        // One final attempt to steal from the global injector if searching count is low.
+        // This mitigates the "last searcher" race where a task is injected just as we park.
+        if self
+            .handle
+            .scheduler
+            .searching_workers
+            .load(Ordering::Acquire)
+            < std::cmp::max(2, num_cpus::get() / 2)
+        {
+            if let Steal::Success(task) = self.handle.scheduler.steal() {
+                prefetch(Arc::as_ptr(&task));
+                self.execute(task);
+                return;
+            }
+        }
+
+        self.handle.scheduler.sleeping_workers.fetch_add(1, Ordering::Release);
+
+        // Sync any pending reactor registrations from TLS before waiting
+        self.handle.flush_registrations();
+
+        // Try to drive the reactor. If we acquire the lock, we wait for I/O events.
+        // If another worker is already driving it, we simply park.
+        if !self.handle.reactor.try_poll() {
+            self.handle.flush_registrations();
+            self.parker.park();
+        }
+
+        self.handle
+            .scheduler
+            .sleeping_workers
+            .fetch_sub(1, Ordering::Release);
     }
 
     fn execute(&mut self, task: Arc<Task>) {
@@ -227,22 +224,7 @@ impl Worker {
                     future.poll_fn = |_, _| std::task::Poll::Ready(());
                 }
 
-                // Phase 4: Recycle task via Thread-Local Pool first (ZERO contention)
-                if Arc::strong_count(&task) == 1 {
-                    let layout = unsafe { (*task.future.get()).layout };
-                    if let Some(idx) = Scheduler::pool_index(layout) {
-                        context::LOCAL_TASK_POOL.with(|p| {
-                            let mut pool = p[idx].borrow_mut();
-                            if pool.len() < 128 {
-                                pool.push(task);
-                            } else {
-                                // Fallback to global pool if local is full.
-                                // If global is ALSO full, the task is dropped and memory is freed.
-                                let _ = self.handle.scheduler.task_pools[idx].push(task);
-                            }
-                        });
-                    }
-                }
+                self.recycle_task(task);
             } else {
                 // Return to IDLE, unless a wake occurred (state is now SCHEDULED)
                 if task
@@ -263,6 +245,25 @@ impl Worker {
         }
 
         self.tick += 1;
+    }
+
+    fn recycle_task(&self, task: Arc<Task>) {
+        // Recycle task via Thread-Local Pool first (ZERO contention)
+        if Arc::strong_count(&task) == 1 {
+            let layout = unsafe { (*task.future.get()).layout };
+            if let Some(idx) = Scheduler::pool_index(layout) {
+                context::LOCAL_TASK_POOL.with(|p| {
+                    let mut pool = p[idx].borrow_mut();
+                    if pool.len() < 128 {
+                        pool.push(task);
+                    } else {
+                        // Fallback to global pool if local is full.
+                        // If global is ALSO full, the task is dropped and memory is freed.
+                        let _ = self.handle.scheduler.task_pools[idx].push(task);
+                    }
+                });
+            }
+        }
     }
 
     /// Fast Xorshift32 Random Number Generator
