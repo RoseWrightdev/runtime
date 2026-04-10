@@ -5,29 +5,28 @@ Implementation of a high-performance, work-stealing asynchronous executor and re
 ```mermaid
 sequenceDiagram
     participant W as Worker Thread
-    participant T as Task (Future)
+    participant T as Task
     participant R as Reactor (Shared)
     participant K as Kernel (OS)
 
     Note over W,T: Task Execution
     W->>+T: 1. poll()
-    T-->>-W: 2. return Poll::Pending
     
-    Note over W,R: I/O Registration
-    W->>+R: 3. register(fd, waker)
+    Note over T,R: Registration inside poll
+    T->>+R: 2. register(fd, waker)
+    T-->>-W: 3. return Poll::Pending
     
     Note over W: Worker becomes idle
-    W->>+R: 4. try_poll() (Acquire Lock)
+    W->>+R: 4. try_poll()
     R->>+K: 5. epoll_wait(timeout)
     K-->>-R: 6. Events Ready
     
-    Note over R,T: Waker triggers re-scheduling
-    R->>+T: 7. waker.wake()
-    T-->>-W: 8. Task added to Queue
+    Note over R,W: Waker re-queues task
+    R->>W: 7. waker.wake()
     
-    Note over W,T: Execution Resumes
-    W->>+T: 9. poll() again
-    T-->>-W: 10. return Poll::Ready(n)
+    Note over W,T: Execution resumes
+    W->>+T: 8. poll()
+    T-->>-W: 9. return Poll::Ready(n)
 ```
 
 ## Performance Data
