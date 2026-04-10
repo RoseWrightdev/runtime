@@ -187,6 +187,12 @@ impl Drop for AsyncTcpStream {
     }
 }
 
+impl AsRawFd for AsyncTcpStream {
+    fn as_raw_fd(&self) -> std::os::unix::io::RawFd {
+        self.inner.as_raw_fd()
+    }
+}
+
 struct ConnectFuture<'a> {
     stream: &'a AsyncTcpStream,
 }
