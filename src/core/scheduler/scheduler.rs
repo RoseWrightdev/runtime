@@ -27,6 +27,7 @@ impl Scheduler {
         F: Future<Output = T> + Send + 'static,
     {
         if !self.shutdown {
+            unimplemented!();
             let _ = future; // Suppress unused future warning for now
             let task = Arc::new(Task::new());
             self.global_queue.push(task);
