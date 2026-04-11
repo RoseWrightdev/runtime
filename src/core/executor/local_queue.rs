@@ -18,4 +18,8 @@ impl LocalQueue {
     pub fn pop(&mut self) -> Option<Arc<Task>> {
         self.queue.pop()
     }
+
+    pub fn get_stealer(&self) -> deque::Stealer<Arc<Task>> {
+        self.queue.stealer()
+    }
 }

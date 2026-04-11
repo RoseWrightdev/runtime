@@ -1,7 +1,4 @@
-use std::{
-    alloc::Layout,
-    cell::RefCell,
-};
+use std::alloc::Layout;
 
 const MIN_BUCKET_SHIFT: u32 = 5;  // 2^5 = 32 bytes
 const MAX_BUCKET_SHIFT: u32 = 15; // 2^15 = 32,768 bytes

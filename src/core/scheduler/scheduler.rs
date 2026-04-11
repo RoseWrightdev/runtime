@@ -22,14 +22,16 @@ impl Scheduler {
         }
     }
 
-    pub fn spawn_internal<F, T>(&self, future: F)
+    pub fn spawn_internal<F, T>(self: &Arc<Self>, future: F)
     where
         F: Future<Output = T> + Send + 'static,
+        T: Send + 'static,
     {
         if !self.shutdown {
-            unimplemented!();
-            let _ = future; // Suppress unused future warning for now
-            let task = Arc::new(Task::new());
+            let scheduler = self.clone();
+            let task = Task::new(async move {
+                let _ = future.await;
+            }, scheduler);
             self.global_queue.push(task);
         }
     }

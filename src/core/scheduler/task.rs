@@ -1,10 +1,9 @@
 use std::{
-    alloc::Layout,
     cell::UnsafeCell,
     future::Future,
     ptr,
     sync::Arc,
-    task::Context,
+    task::Context as StdContext,
 };
 
 use futures::task::ArcWake;
@@ -12,7 +11,7 @@ use crate::core::scheduler::scheduler::Scheduler;
 use crate::core::executor::context::Context;
 
 pub(crate) struct RawTaskVTable {
-    poll_fn: unsafe fn(*mut u8, *mut Context<'_>) -> std::task::Poll<()>,
+    poll_fn: unsafe fn(*mut u8, *mut StdContext<'_>) -> std::task::Poll<()>,
     drop_fn: unsafe fn(*mut u8),
     dealloc_fn: unsafe fn(*mut u8),
 }
@@ -23,7 +22,7 @@ pub(crate) trait HasVTable {
 
 impl<F: Future<Output = ()> + Send + 'static> HasVTable for F {
     const VTABLE: &'static RawTaskVTable = &RawTaskVTable {
-        poll_fn: RawFuture::poll::<F>,
+        poll_fn: RawFuture::poll_internal::<F>,
         drop_fn: RawFuture::drop_future::<F>,
         dealloc_fn: RawFuture::dealloc_future::<F>,
     };
@@ -48,7 +47,7 @@ impl RawFuture {
     }
 
     #[inline(always)]
-    unsafe fn poll<F: Future<Output = ()>>(ptr: *mut u8, cx: *mut Context<'_>) -> std::task::Poll<()> {
+    unsafe fn poll_internal<F: Future<Output = ()>>(ptr: *mut u8, cx: *mut StdContext<'_>) -> std::task::Poll<()> {
         let future = unsafe { &mut *(ptr as *mut F) };
         unsafe { std::pin::Pin::new_unchecked(future).poll(&mut *cx) }
     }
@@ -66,7 +65,7 @@ impl RawFuture {
         }
     }
 
-    pub fn poll_dynamic(&mut self, cx: &mut Context<'_>) -> std::task::Poll<()> {
+    pub fn poll(&mut self, cx: &mut StdContext<'_>) -> std::task::Poll<()> {
         unsafe { (self.vtable.poll_fn)(self.ptr, cx as *mut _) }
     }
 }

@@ -7,7 +7,6 @@ use std::sync::Arc;
 pub(crate) struct Pool {
     workers: Vec<Worker>,
     stealers: Vec<Stealer<Arc<Task>>>,
-    parkers: Vec<Parker>,
     unparkers: Vec<Unparker>,
 }
 
@@ -15,7 +14,6 @@ impl Pool {
     pub fn new(num_workers: usize) -> Self {
         let mut workers = vec![];
         let mut stealers = vec![];
-        let mut parkers = vec![];
         let mut unparkers = vec![];
 
         for index in 0..num_workers {
@@ -23,33 +21,30 @@ impl Pool {
                 index,
                 Self::steal_global,
                 Self::steal_local,
-                unimplemented!(),
-                unimplemented!(),
-                unimplemented!(),
+                Self::steal_reactor, // We can stub this for now
             );
-            let stealer = worker.get_stealer();
-            let parker = worker.get_parker();
-            let unparker = worker.get_unparker();
 
+            stealers.push(worker.get_stealer());
+            unparkers.push(worker.get_unparker());
             workers.push(worker);
-            stealers.push(stealer);
-            parkers.push(parker);
-            unparkers.push(unparker);
         }
 
         Self {
             workers,
             stealers,
-            parkers,
             unparkers,
         }
     }
 
     fn steal_global() -> Option<Arc<Task>> {
-        unimplemented!()
+        None
     }
 
     fn steal_local() -> Option<Arc<Task>> {
-        unimplemented!()
+        None
+    }
+
+    fn steal_reactor() -> Option<Arc<Task>> {
+        None
     }
 }

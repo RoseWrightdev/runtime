@@ -3,16 +3,16 @@ use std::future::Future;
 use std::sync::Arc;
 use crate::core::scheduler::scheduler::Scheduler;
 
-struct Runtime<'a> {
-    scheduler: &'a Scheduler
+struct Runtime {
+    scheduler: Arc<Scheduler>
 }
 
-impl<'a> Runtime<'a> {
-    pub fn new(scheduler: &'a Scheduler) -> Self {
+impl Runtime {
+    pub fn new(scheduler: Arc<Scheduler>) -> Self {
         Self { scheduler }
     }
     
-    pub fn spawn<F, T>(self: &Arc<Self>, future: F) 
+    pub fn spawn<F, T>(&self, future: F) 
     where
         F: Future<Output = T> + Send + 'static,
         T: Any + Send + 'static,

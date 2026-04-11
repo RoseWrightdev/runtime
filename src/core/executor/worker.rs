@@ -1,19 +1,22 @@
 use std::sync::Arc;
+use std::task::Poll;
 
 use crossbeam::deque::{self, Stealer};
 use crossbeam::sync::{Parker, Unparker};
 
 use crate::core::executor::local_queue::LocalQueue;
-use crate::core::executor::task_pool;
 use crate::core::scheduler::task::Task;
+
 pub(crate) struct Worker {
     steal_global: fn() -> Option<Arc<Task>>,
     steal_local: fn() -> Option<Arc<Task>>,
-    drive_reactor: fn() -> (),
+    steal_reactor: fn() -> Option<Arc<Task>>,
 
     index: usize,
     queue: LocalQueue,
-    pool: task_pool::Pool,
+    stealer: Stealer<Arc<Task>>,
+    parker: Parker,
+    unparker: Unparker,
     tick: usize,
 }
 
@@ -22,25 +25,33 @@ impl Worker {
         index: usize,
         steal_global: fn() -> Option<Arc<Task>>,
         steal_local: fn() -> Option<Arc<Task>>,
-        steal_reactor: fn() -> unimplemented!(),
-
-        stealer: Stealer<Arc<Task>>,
-        parker: Parker,
-        unparker: Unparker,
+        steal_reactor: fn() -> Option<Arc<Task>>,
     ) -> Self {
-        unimplemented!()
+        let queue = LocalQueue::new();
+        let stealer = queue.get_stealer();
+        let parker = Parker::new();
+        let unparker = parker.unparker().clone();
+
+        Self {
+            steal_global,
+            steal_local,
+            steal_reactor,
+
+            index,
+            queue,
+            stealer,
+            parker,
+            unparker,
+            tick: 0,
+        }
     }
 
     pub fn get_stealer(&self) -> deque::Stealer<Arc<Task>> {
-        unimplemented!()
-    }
-
-    pub fn get_parker(&self) -> Parker {
-        unimplemented!()
+        self.stealer.clone()
     }
 
     pub fn get_unparker(&self) -> Unparker {
-        unimplemented!()
+        self.unparker.clone()
     }
 
     pub fn run(&mut self) {
@@ -87,16 +98,15 @@ impl Worker {
     }
 
     fn execute(&mut self, task: Arc<Task>) {
-        // Context is a wrapper around the Waker. 
+        // Context is a wrapper around the Waker.
         // It's what gets passed into poll() so the future can
         // register itself to be woken later.
         let waker = futures::task::waker_ref(&task);
         let mut cx = std::task::Context::from_waker(&waker);
-        let mut future = task.future.lock().unwrap();
 
-        // future executes here, up until completion
-        // or the next .await point
-        match future.as_mut().poll(&mut cx) {
+        // Execute the future using our new VTable dynamics entirely lock-free
+        let future_ptr = task.future.get();
+        match unsafe { (*future_ptr).poll(&mut cx) } {
             // Future completed.
             Poll::Ready(_) => {}
 
@@ -106,7 +116,6 @@ impl Worker {
             // wake() re-queues it.
             Poll::Pending => {}
         }
-
     }
 
     fn park(&mut self) {}
