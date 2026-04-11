@@ -39,4 +39,8 @@ impl Scheduler {
     pub fn steal_global(&self) -> Option<Arc<Task>> {
         self.global_queue.steal()
     }
+
+    pub fn start(self: &Arc<Self>) {
+        self.worker_pool.start(self.clone());
+    }
 }

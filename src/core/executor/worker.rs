@@ -46,6 +46,10 @@ impl Worker {
         }
     }
 
+    pub fn get_index(&self) -> usize {
+        self.index
+    }
+
     pub fn get_stealer(&self) -> deque::Stealer<Arc<Task>> {
         self.stealer.clone()
     }
@@ -89,7 +93,10 @@ impl Worker {
             }
         }
 
-        // 4. steal from workers
+        // 4. drive reactor
+        (self.steal_reactor)();
+
+        // 5. steal from workers
         if let Some(task) = (self.steal_local)() {
             return Some(task);
         }

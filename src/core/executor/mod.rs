@@ -1,4 +1,4 @@
 pub(crate) mod worker;
 pub(crate) mod context;
 pub(crate) mod task_pool;
-mod local_queue;
+pub(crate) mod local_queue;
