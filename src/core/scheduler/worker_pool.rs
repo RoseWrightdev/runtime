@@ -21,7 +21,7 @@ impl Pool {
                 index,
                 Self::steal_global,
                 Self::steal_local,
-                Self::steal_reactor, // We can stub this for now
+                Self::drive_reactor, // We can stub this for now
             );
 
             stealers.push(worker.get_stealer());
@@ -44,7 +44,7 @@ impl Pool {
         None
     }
 
-    fn steal_reactor() -> Option<Arc<Task>> {
-        None
+    fn drive_reactor() {
+        unimplemented!()
     }
 }

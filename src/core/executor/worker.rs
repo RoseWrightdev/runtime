@@ -10,7 +10,7 @@ use crate::core::scheduler::task::Task;
 pub(crate) struct Worker {
     steal_global: fn() -> Option<Arc<Task>>,
     steal_local: fn() -> Option<Arc<Task>>,
-    steal_reactor: fn() -> Option<Arc<Task>>,
+    steal_reactor: fn() -> (),
 
     index: usize,
     queue: LocalQueue,
@@ -25,7 +25,7 @@ impl Worker {
         index: usize,
         steal_global: fn() -> Option<Arc<Task>>,
         steal_local: fn() -> Option<Arc<Task>>,
-        steal_reactor: fn() -> Option<Arc<Task>>,
+        steal_reactor: fn() -> (),
     ) -> Self {
         let queue = LocalQueue::new();
         let stealer = queue.get_stealer();
