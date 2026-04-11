@@ -22,6 +22,7 @@ impl Worker {
         index: usize,
         steal_global: fn() -> Option<Arc<Task>>,
         steal_local: fn() -> Option<Arc<Task>>,
+        steal_reactor: fn() -> unimplemented!(),
 
         stealer: Stealer<Arc<Task>>,
         parker: Parker,
@@ -86,8 +87,26 @@ impl Worker {
     }
 
     fn execute(&mut self, task: Arc<Task>) {
+        // Context is a wrapper around the Waker. 
+        // It's what gets passed into poll() so the future can
+        // register itself to be woken later.
         let waker = futures::task::waker_ref(&task);
         let mut cx = std::task::Context::from_waker(&waker);
+        let mut future = task.future.lock().unwrap();
+
+        // future executes here, up until completion
+        // or the next .await point
+        match future.as_mut().poll(&mut cx) {
+            // Future completed.
+            Poll::Ready(_) => {}
+
+            // Future is waiting on something (I/O, timer).
+            // It has already registered its waker with whatever
+            // will wake it, so we just leave it alone until
+            // wake() re-queues it.
+            Poll::Pending => {}
+        }
+
     }
 
     fn park(&mut self) {}
