@@ -27,3 +27,22 @@ impl GlobalQueue {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::scheduler::scheduler::Scheduler;
+    use crate::core::scheduler::task::Task;
+
+    #[test]
+    fn test_global_queue_push_steal() {
+        let gq = GlobalQueue::new();
+        let scheduler = Arc::new(Scheduler::new());
+        let task = Task::new(async {}, scheduler);
+        
+        gq.push(task.clone());
+        let stolen = gq.steal().expect("Task should be present");
+        assert!(Arc::ptr_eq(&task, &stolen));
+        assert!(gq.steal().is_none());
+    }
+}

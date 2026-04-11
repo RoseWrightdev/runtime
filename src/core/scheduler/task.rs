@@ -111,3 +111,44 @@ impl ArcWake for Task {
         arc_self.scheduler.global_queue.push(arc_self.clone());
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn test_task_construction_and_waking() {
+        let scheduler = Arc::new(Scheduler::new());
+        let task = Task::new(async {}, scheduler.clone());
+        
+        // Initial state: nothing in global queue
+        assert!(scheduler.global_queue.steal().is_none());
+        
+        // Wake the task
+        ArcWake::wake_by_ref(&task);
+        
+        // Verify it was pushed to the global queue
+        let stolen = scheduler.global_queue.steal().expect("Task should be in global queue");
+        assert!(Arc::ptr_eq(&task, &stolen));
+    }
+
+    #[test]
+    fn test_raw_future_vtable_poll() {
+        let scheduler = Arc::new(Scheduler::new());
+        let flag = Arc::new(AtomicBool::new(false));
+        let flag_clone = flag.clone();
+        
+        let mut raw = RawFuture::new(async move {
+            flag_clone.store(true, Ordering::Relaxed);
+        });
+        
+        let waker = futures::task::noop_waker();
+        let mut cx = std::task::Context::from_waker(&waker);
+        
+        // Poll it
+        let _ = raw.poll(&mut cx);
+        
+        assert!(flag.load(Ordering::Relaxed));
+    }
+}

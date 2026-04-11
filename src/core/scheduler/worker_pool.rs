@@ -100,3 +100,25 @@ impl Pool {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pool_construction() {
+        let pool = Pool::new(4);
+        
+        // Check unparkers harvested
+        assert_eq!(pool.unparkers.len(), 4);
+        
+        // Check stealers harvested
+        assert_eq!(pool.stealers.len(), 4);
+        
+        // Check workers held before start
+        {
+            let lock = pool.workers.lock().unwrap();
+            assert_eq!(lock.len(), 4);
+        }
+    }
+}

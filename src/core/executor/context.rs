@@ -26,3 +26,26 @@ impl Context {
         CURRENT_CONTEXT.with(|ctx| f(&mut ctx.borrow_mut()))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_executor_context_metadata() {
+        Context::with(|ctx| {
+            ctx.worker_index = Some(5);
+            ctx.stealers = Some(Arc::new(vec![1, 2, 3]));
+        });
+
+        Context::with(|ctx| {
+            assert_eq!(ctx.worker_index, Some(5));
+            let stealers = ctx.stealers.as_ref()
+                .unwrap()
+                .downcast_ref::<Vec<i32>>()
+                .unwrap();
+            assert_eq!(stealers.len(), 3);
+            assert_eq!(stealers[0], 1);
+        });
+    }
+}

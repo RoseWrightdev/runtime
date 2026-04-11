@@ -44,3 +44,23 @@ impl Scheduler {
         self.worker_pool.start(self.clone());
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_scheduler_spawn() {
+        let scheduler = Arc::new(Scheduler::new());
+        
+        // Initially empty
+        assert!(scheduler.steal_global().is_none());
+        
+        // Spawn a task
+        scheduler.spawn_internal(async { 1 + 1 });
+        
+        // Should be in global queue
+        assert!(scheduler.steal_global().is_some());
+        assert!(scheduler.steal_global().is_none());
+    }
+}

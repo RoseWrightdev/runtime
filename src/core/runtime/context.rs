@@ -34,3 +34,32 @@ impl Drop for Context {
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_context_nesting() {
+        let scheduler1 = Arc::new(Scheduler::new());
+        let scheduler2 = Arc::new(Scheduler::new());
+        
+        assert!(Context::current().is_none());
+        
+        {
+            let _guard1 = Context::enter(scheduler1.clone());
+            assert!(Arc::ptr_eq(&Context::current().unwrap(), &scheduler1));
+            
+            {
+                let _guard2 = Context::enter(scheduler2.clone());
+                assert!(Arc::ptr_eq(&Context::current().unwrap(), &scheduler2));
+            }
+            
+            // Back to scheduler 1 after guard 2 drops
+            assert!(Arc::ptr_eq(&Context::current().unwrap(), &scheduler1));
+        }
+        
+        // Back to none after guard 1 drops
+        assert!(Context::current().is_none());
+    }
+}
