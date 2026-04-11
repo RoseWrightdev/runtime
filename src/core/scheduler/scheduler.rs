@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::core::scheduler::global_queue::GlobalQueue;
 use crate::core::scheduler::worker_pool::Pool;
-use crate::core::task::Task;
+use crate::core::scheduler::task::Task;
 
 pub(crate) struct Scheduler {
     global_queue: GlobalQueue,

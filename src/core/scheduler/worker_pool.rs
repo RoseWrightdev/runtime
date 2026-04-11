@@ -1,5 +1,5 @@
 use crate::core::executor::worker::Worker;
-use crate::core::task::Task;
+use crate::core::scheduler::task::Task;
 use crossbeam::deque::Stealer;
 use crossbeam::sync::{Parker, Unparker};
 use std::sync::Arc;

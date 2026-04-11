@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use crossbeam::deque::{Injector, Steal};
-use crate::core::task::Task;
+use crate::core::scheduler::task::Task;
 
 pub(crate) struct GlobalQueue {
     queue: Injector<Arc<Task>>,

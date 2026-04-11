@@ -3,6 +3,8 @@ use std::cell::UnsafeCell;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+use futures::task::ArcWake;
+
 pub struct Task {
     future: UnsafeCell<RawFuture>,
 }
@@ -20,5 +22,14 @@ impl Future for RawFuture {
 
     fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
         Poll::Pending
+    }
+}
+
+unsafe impl Sync for Task {}
+unsafe impl Send for Task {}
+
+impl ArcWake for Task {
+    fn wake_by_ref(_arc_self: &std::sync::Arc<Self>) {
+        unimplemented!()
     }
 }

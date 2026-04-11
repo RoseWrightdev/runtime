@@ -3,15 +3,16 @@ use std::sync::Arc;
 use crossbeam::deque::{self, Stealer};
 use crossbeam::sync::{Parker, Unparker};
 
+use crate::core::executor::local_queue::LocalQueue;
 use crate::core::executor::task_pool;
-use crate::core::task::Task;
+use crate::core::scheduler::task::Task;
 pub(crate) struct Worker {
     steal_global: fn() -> Option<Arc<Task>>,
     steal_local: fn() -> Option<Arc<Task>>,
     drive_reactor: fn() -> (),
 
     index: usize,
-    queue: deque::Worker<Arc<Task>>,
+    queue: LocalQueue,
     pool: task_pool::Pool,
     tick: usize,
 }
@@ -84,7 +85,10 @@ impl Worker {
         None
     }
 
-    fn execute(&mut self, task: Arc<Task>) {}
+    fn execute(&mut self, task: Arc<Task>) {
+        let waker = futures::task::waker_ref(&task);
+        let mut cx = std::task::Context::from_waker(&waker);
+    }
 
     fn park(&mut self) {}
 }
