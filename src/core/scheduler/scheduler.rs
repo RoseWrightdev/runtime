@@ -2,6 +2,8 @@ use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::core::executor::context::Context as ExecutorContext;
+
 use crate::core::scheduler::global_queue::GlobalQueue;
 use crate::core::scheduler::worker_pool::Pool;
 use crate::core::scheduler::task::Task;
@@ -14,8 +16,10 @@ pub(crate) struct Scheduler {
 
 impl Scheduler {
     pub fn new() -> Self {
-        let num_workers = num_cpus::get();
+        Self::new_with_workers(num_cpus::get())
+    }
 
+    pub fn new_with_workers(num_workers: usize) -> Self {
         Scheduler {
             global_queue: GlobalQueue::new(),
             worker_pool: Pool::new(num_workers),
@@ -33,7 +37,11 @@ impl Scheduler {
             let task = Task::new(async move {
                 let _ = future.await;
             }, scheduler);
-            self.global_queue.push(task);
+            
+            // Try to push to the local worker LIFO slot first
+            if !ExecutorContext::try_push_local(task.clone()) {
+                self.global_queue.push(task);
+            }
         }
     }
 

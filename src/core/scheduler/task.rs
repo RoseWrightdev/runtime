@@ -106,9 +106,11 @@ unsafe impl Send for Task {}
 
 impl ArcWake for Task {
     fn wake_by_ref(arc_self: &Arc<Self>) {
-        // Just push straight to the global scheduler queue 
-        // without all the LIFO optimizations for now.
-        arc_self.scheduler.global_queue.push(arc_self.clone());
+        // Try to push to the local worker LIFO slot first
+        if !Context::try_push_local(arc_self.clone()) {
+            // Fall back to the global scheduler queue 
+            arc_self.scheduler.global_queue.push(arc_self.clone());
+        }
     }
 }
 

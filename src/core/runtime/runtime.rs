@@ -10,7 +10,11 @@ pub struct Runtime {
 
 impl Runtime {
     pub fn new() -> Self {
-        let scheduler = Arc::new(Scheduler::new());
+        Self::with_workers(num_cpus::get())
+    }
+
+    pub fn with_workers(num_workers: usize) -> Self {
+        let scheduler = Arc::new(Scheduler::new_with_workers(num_workers));
         scheduler.start();
         Self { scheduler }
     }

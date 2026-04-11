@@ -19,6 +19,10 @@ impl LocalQueue {
         self.queue.pop()
     }
 
+    pub fn push(&mut self, task: Arc<Task>) {
+        self.queue.push(task);
+    }
+
     pub fn get_stealer(&self) -> deque::Stealer<Arc<Task>> {
         self.queue.stealer()
     }

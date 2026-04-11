@@ -30,7 +30,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::mpsc;
+    use std::sync::{mpsc, Arc, Mutex};
 
     #[test]
     fn test_block_on_basic() {
@@ -133,5 +133,36 @@ mod tests {
         assert!(!rt.is_shutdown());
         rt.shutdown();
         assert!(rt.is_shutdown());
+    }
+
+    #[test]
+    fn test_lifo_slot_priority() {
+        let execution_order = Arc::new(Mutex::new(Vec::new()));
+        
+        let order_clone = execution_order.clone();
+        // Use only 1 worker to ensure deterministic LIFO order without interference from stealing
+        Runtime::with_workers(1).block_on(async move {
+            let order = order_clone.clone();
+            
+            // Spawn Task C (should go to LIFO slot)
+            let order_c = order.clone();
+            spawn(async move {
+                order_c.lock().unwrap().push('C');
+            });
+
+            // Task A is running right now.
+            // It spawns Task B. Since LIFO works, B should replace C in the slot.
+            // C should be pushed to the local queue.
+            let order_b = order.clone();
+            spawn(async move {
+                order_b.lock().unwrap().push('B');
+            });
+
+            order.lock().unwrap().push('A');
+        });
+
+        let final_order = execution_order.lock().unwrap();
+        // B (slot) should run before C (queue)
+        assert_eq!(*final_order, vec!['A', 'B', 'C'], "High priority task B should have run before C");
     }
 }

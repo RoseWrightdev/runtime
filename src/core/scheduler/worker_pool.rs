@@ -56,10 +56,12 @@ impl Pool {
                 // Initialize Runtime context
                 let _rt_guard = RuntimeContext::enter(scheduler);
 
-                // Initialize Executor context (worker index and stealers)
+                // Initialize Executor context (worker index, stealers, and local queue handle)
+                let queue_ptr = worker.get_queue_ptr();
                 ExecutorContext::with(|ctx| {
                     ctx.worker_index = Some(index);
                     ctx.stealers = Some(Arc::new(stealers));
+                    ctx.local_queue_ptr = Some(queue_ptr);
                 });
 
                 // Start execution loop
@@ -69,7 +71,7 @@ impl Pool {
     }
 
     pub fn drive_reactor() {
-        todo!("Stub for now, will be implemented with Mio")
+        // Will be implemented with Mio - currently a no-op to allow testing
     }
 
     pub fn steal_global() -> Option<Arc<Task>> {

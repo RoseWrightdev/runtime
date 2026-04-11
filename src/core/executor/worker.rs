@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::task::Poll;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use crate::core::runtime::context::Context as RuntimeContext;
+use crate::core::executor::context::Context as ExecutorContext;
 
 use crossbeam::deque::{self, Stealer};
 use crossbeam::sync::{Parker, Unparker};
@@ -60,6 +61,10 @@ impl Worker {
         self.unparker.clone()
     }
 
+    pub fn get_queue_ptr(&mut self) -> *mut LocalQueue {
+        &mut self.queue as *mut _
+    }
+
     pub fn run(&mut self) {
         loop {
             // Check for shutdown signal from global scheduler
@@ -77,8 +82,13 @@ impl Worker {
             self.park()
         }
     }
-
     fn steal(&mut self) -> Option<Arc<Task>> {
+        // 0. check LIFO slot first
+        let task = ExecutorContext::with(|ctx| ctx.lifo_slot.take());
+        if let Some(task) = task {
+            return Some(task);
+        }
+
         self.tick = self.tick.wrapping_add(1);
 
         // 1. check global queue first to prevent starvation
