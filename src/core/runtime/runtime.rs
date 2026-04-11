@@ -2,6 +2,7 @@ use std::any::Any;
 use std::future::Future;
 use std::sync::Arc;
 use crate::core::scheduler::scheduler::Scheduler;
+use crate::core::runtime::context::Context;
 
 struct Runtime {
     scheduler: Arc<Scheduler>
@@ -25,6 +26,7 @@ impl Runtime {
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
+        let _guard = Context::enter(self.scheduler.clone());
 
         let (tx, rx) = std::sync::mpsc::channel();
         self.scheduler.spawn_internal(async move {
