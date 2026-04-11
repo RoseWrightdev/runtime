@@ -1,16 +1,15 @@
-use std::sync::Arc;
-use crossbeam::deque::Steal;
-use crossbeam::deque::Stealer;
+use crossbeam::deque::{Steal, Stealer};
 use crossbeam::sync::Unparker;
+use std::sync::Arc;
 
 use crate::core::executor::context::Context as ExecutorContext;
 use crate::core::executor::worker::Worker;
 use crate::core::runtime::context::Context as RuntimeContext;
-use crate::core::scheduler::task::Task;
+use crate::core::scheduler::task::TaskRef;
 
 pub(crate) struct Pool {
     workers: std::sync::Mutex<Vec<Worker>>,
-    stealers: Arc<[Stealer<Arc<Task>>]>,
+    stealers: Arc<[Stealer<TaskRef>]>,
     unparkers: Vec<Unparker>,
 }
 
@@ -74,28 +73,28 @@ impl Pool {
         // Will be implemented with Mio - currently a no-op to allow testing
     }
 
-    pub fn steal_global() -> Option<Arc<Task>> {
+    pub fn steal_global() -> Option<TaskRef> {
         RuntimeContext::current().and_then(|rt| rt.steal_global())
     }
 
-    pub fn steal_local() -> Option<Arc<Task>> {
+    pub fn steal_local() -> Option<TaskRef> {
         ExecutorContext::with(|ctx| {
             if let (Some(index), Some(any_stealers)) = (ctx.worker_index, &ctx.stealers) {
-                if let Some(stealers) = any_stealers
-                    .downcast_ref::<Arc<[Stealer<Arc<Task>>]>>() {
-                        for (i, stealer) in stealers.iter().enumerate() {
-                            if i == index {
-                                continue;
-                            }
+                if let Some(stealers) = any_stealers.downcast_ref::<Arc<[Stealer<TaskRef>]>>() {
+                    let stealers: &[Stealer<TaskRef>] = &**stealers;
+                    for (i, stealer) in stealers.iter().enumerate() {
+                        if i == index {
+                            continue;
+                        }
 
-                            loop {
-                                match stealer.steal() {
-                                    Steal::Success(task) => return Some(task),
-                                    Steal::Retry => continue,
-                                    Steal::Empty => break,
-                                }
+                        loop {
+                            match stealer.steal() {
+                                Steal::Success(task) => return Some(task),
+                                Steal::Retry => continue,
+                                Steal::Empty => break,
                             }
                         }
+                    }
                 }
             }
             None
@@ -116,13 +115,13 @@ mod tests {
     #[test]
     fn test_pool_construction() {
         let pool = Pool::new(4);
-        
+
         // Check unparkers harvested
         assert_eq!(pool.unparkers.len(), 4);
-        
+
         // Check stealers harvested
         assert_eq!(pool.stealers.len(), 4);
-        
+
         // Check workers held before start
         {
             let lock = pool.workers.lock().unwrap();

@@ -1,11 +1,11 @@
+use crate::core::runtime::context::Context;
+use crate::core::scheduler::scheduler::Scheduler;
 use std::any::Any;
 use std::future::Future;
 use std::sync::Arc;
-use crate::core::scheduler::scheduler::Scheduler;
-use crate::core::runtime::context::Context;
 
 pub struct Runtime {
-    scheduler: Arc<Scheduler>
+    scheduler: Arc<Scheduler>,
 }
 
 impl Runtime {
@@ -18,8 +18,8 @@ impl Runtime {
         scheduler.start();
         Self { scheduler }
     }
-    
-    pub fn spawn<F, T>(&self, future: F) 
+
+    pub fn spawn<F, T>(&self, future: F)
     where
         F: Future<Output = T> + Send + 'static,
         T: Any + Send + 'static,

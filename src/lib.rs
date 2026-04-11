@@ -2,8 +2,8 @@ pub mod core;
 pub mod net;
 pub mod time;
 
-pub use crate::core::runtime::runtime::Runtime;
 use crate::core::runtime::context::Context as RuntimeContext;
+pub use crate::core::runtime::runtime::Runtime;
 
 use std::future::Future;
 
@@ -30,20 +30,18 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{mpsc, Arc, Mutex};
+    use std::sync::{Arc, Mutex, mpsc};
 
     #[test]
     fn test_block_on_basic() {
-        let result = block_on(async {
-            42
-        });
+        let result = block_on(async { 42 });
         assert_eq!(result, 42);
     }
 
     #[test]
     fn test_spawn_and_collect() {
         let (tx, rx) = mpsc::channel();
-        
+
         block_on(async move {
             spawn(async move {
                 tx.send(100).unwrap();
@@ -56,7 +54,7 @@ mod tests {
     #[test]
     fn test_multi_spawn() {
         let (tx, rx) = mpsc::channel();
-        
+
         block_on(async move {
             for i in 0..10 {
                 let tx = tx.clone();
@@ -75,12 +73,12 @@ mod tests {
     #[test]
     fn test_panic_survivability() {
         let (tx, rx) = mpsc::channel();
-        
+
         block_on(async move {
             spawn(async {
                 panic!("intentional panic");
             });
-            
+
             spawn(async move {
                 tx.send(Ok::<_, ()>(())).unwrap();
             });
@@ -113,7 +111,7 @@ mod tests {
     fn test_stress_concurrency_heavy() {
         let (tx, rx) = mpsc::channel();
         let num_tasks = 10_000;
-        
+
         block_on(async move {
             for _ in 0..num_tasks {
                 let tx = tx.clone();
@@ -138,12 +136,12 @@ mod tests {
     #[test]
     fn test_lifo_slot_priority() {
         let execution_order = Arc::new(Mutex::new(Vec::new()));
-        
+
         let order_clone = execution_order.clone();
         // Use only 1 worker to ensure deterministic LIFO order without interference from stealing
         Runtime::with_workers(1).block_on(async move {
             let order = order_clone.clone();
-            
+
             // Spawn Task C (should go to LIFO slot)
             let order_c = order.clone();
             spawn(async move {
@@ -160,9 +158,31 @@ mod tests {
 
             order.lock().unwrap().push('A');
         });
+        
+        // Wait for workers to finish B and C (they were queued during A)
+        // Since we have a single worker and we know the order, we can just wait 
+        // for the vector to reach size 3.
+        let mut attempts = 0;
+        loop {
+            {
+                let order = execution_order.lock().unwrap();
+                if order.len() >= 3 {
+                    break;
+                }
+            }
+            std::thread::yield_now();
+            attempts += 1;
+            if attempts > 1000 {
+                panic!("Tasks B and C failed to execute in time");
+            }
+        }
 
         let final_order = execution_order.lock().unwrap();
         // B (slot) should run before C (queue)
-        assert_eq!(*final_order, vec!['A', 'B', 'C'], "High priority task B should have run before C");
+        assert_eq!(
+            *final_order,
+            vec!['A', 'B', 'C'],
+            "High priority task B should have run before C"
+        );
     }
 }

@@ -1,6 +1,6 @@
+use crate::core::scheduler::scheduler::Scheduler;
 use std::cell::RefCell;
 use std::sync::Arc;
-use crate::core::scheduler::scheduler::Scheduler;
 
 thread_local! {
     static CURRENT_RUNTIME: RefCell<Option<Arc<Scheduler>>> = RefCell::new(None);
@@ -21,7 +21,7 @@ impl Context {
 
         Self { prev }
     }
-    
+
     pub fn current() -> Option<Arc<Scheduler>> {
         CURRENT_RUNTIME.with(|rt| rt.borrow().clone())
     }
@@ -43,22 +43,22 @@ mod tests {
     fn test_context_nesting() {
         let scheduler1 = Arc::new(Scheduler::new());
         let scheduler2 = Arc::new(Scheduler::new());
-        
+
         assert!(Context::current().is_none());
-        
+
         {
             let _guard1 = Context::enter(scheduler1.clone());
             assert!(Arc::ptr_eq(&Context::current().unwrap(), &scheduler1));
-            
+
             {
                 let _guard2 = Context::enter(scheduler2.clone());
                 assert!(Arc::ptr_eq(&Context::current().unwrap(), &scheduler2));
             }
-            
+
             // Back to scheduler 1 after guard 2 drops
             assert!(Arc::ptr_eq(&Context::current().unwrap(), &scheduler1));
         }
-        
+
         // Back to none after guard 1 drops
         assert!(Context::current().is_none());
     }

@@ -1,9 +1,9 @@
-use std::cell::RefCell;
-use std::any::Any;
-use std::sync::Arc;
-use crate::core::executor::task_pool::Pool;
 use crate::core::executor::local_queue::LocalQueue;
-use crate::core::scheduler::task::Task;
+use crate::core::executor::task_pool::Pool;
+use crate::core::scheduler::task::TaskRef;
+use std::any::Any;
+use std::cell::RefCell;
+use std::sync::Arc;
 
 thread_local! {
     static CURRENT_CONTEXT: RefCell<Context> = RefCell::new(Context::new());
@@ -15,7 +15,7 @@ pub(crate) struct Context {
     pub(crate) stealers: Option<Arc<dyn Any + Send + Sync>>,
 
     // LIFO slot for the current worker
-    pub(crate) lifo_slot: Option<Arc<Task>>,
+    pub(crate) lifo_slot: Option<TaskRef>,
     // Pointer to the local queue, safe because it's only accessed on the same thread
     pub(crate) local_queue_ptr: Option<*mut LocalQueue>,
 }
@@ -31,7 +31,7 @@ impl Context {
         }
     }
 
-    pub(crate) fn try_push_local(task: Arc<Task>) -> bool {
+    pub(crate) fn try_push_local(task: TaskRef) -> bool {
         Self::with(|ctx| {
             if let Some(queue_ptr) = ctx.local_queue_ptr {
                 // If LIFO slot is full, move the OLD task to the local queue
@@ -66,7 +66,9 @@ mod tests {
 
         Context::with(|ctx| {
             assert_eq!(ctx.worker_index, Some(5));
-            let stealers = ctx.stealers.as_ref()
+            let stealers = ctx
+                .stealers
+                .as_ref()
                 .unwrap()
                 .downcast_ref::<Vec<i32>>()
                 .unwrap();

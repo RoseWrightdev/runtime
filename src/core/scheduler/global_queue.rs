@@ -1,9 +1,8 @@
-use std::sync::Arc;
+use crate::core::scheduler::task::TaskRef;
 use crossbeam::deque::{Injector, Steal};
-use crate::core::scheduler::task::Task;
 
 pub(crate) struct GlobalQueue {
-    queue: Injector<Arc<Task>>,
+    queue: Injector<TaskRef>,
 }
 
 impl GlobalQueue {
@@ -12,12 +11,12 @@ impl GlobalQueue {
             queue: Injector::new(),
         }
     }
-    
-    pub fn push(&self, task: Arc<Task>) {
+
+    pub fn push(&self, task: TaskRef) {
         self.queue.push(task);
     }
 
-    pub fn steal(&self) -> Option<Arc<Task>> {
+    pub fn steal(&self) -> Option<TaskRef> {
         loop {
             match self.queue.steal() {
                 Steal::Success(task) => return Some(task),
@@ -33,16 +32,17 @@ mod tests {
     use super::*;
     use crate::core::scheduler::scheduler::Scheduler;
     use crate::core::scheduler::task::Task;
+    use std::sync::Arc;
 
     #[test]
     fn test_global_queue_push_steal() {
         let gq = GlobalQueue::new();
         let scheduler = Arc::new(Scheduler::new());
-        let task = Task::new(async {}, scheduler);
-        
+        let task = Task::spawn(async {}, scheduler);
+
         gq.push(task.clone());
         let stolen = gq.steal().expect("Task should be present");
-        assert!(Arc::ptr_eq(&task, &stolen));
+        assert_eq!(task.as_ptr(), stolen.as_ptr());
         assert!(gq.steal().is_none());
     }
 }

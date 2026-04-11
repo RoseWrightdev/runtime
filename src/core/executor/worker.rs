@@ -1,24 +1,22 @@
-use std::sync::Arc;
-use std::task::Poll;
-use std::panic::{catch_unwind, AssertUnwindSafe};
-use crate::core::runtime::context::Context as RuntimeContext;
-use crate::core::executor::context::Context as ExecutorContext;
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::atomic::Ordering;
 
 use crossbeam::deque::{self, Stealer};
 use crossbeam::sync::{Parker, Unparker};
 
+use crate::core::executor::context::Context as ExecutorContext;
 use crate::core::executor::local_queue::LocalQueue;
-use crate::core::scheduler::task::Task;
+use crate::core::runtime::context::Context as RuntimeContext;
+use crate::core::scheduler::task::TaskRef;
 
 pub(crate) struct Worker {
-    steal_global: fn() -> Option<Arc<Task>>,
-    steal_local: fn() -> Option<Arc<Task>>,
+    steal_global: fn() -> Option<TaskRef>,
+    steal_local: fn() -> Option<TaskRef>,
     steal_reactor: fn() -> (),
 
     index: usize,
     queue: LocalQueue,
-    stealer: Stealer<Arc<Task>>,
-    parker: Parker,
+    stealer: Stealer<TaskRef>,
     unparker: Unparker,
     tick: usize,
 }
@@ -26,8 +24,8 @@ pub(crate) struct Worker {
 impl Worker {
     pub fn new(
         index: usize,
-        steal_global: fn() -> Option<Arc<Task>>,
-        steal_local: fn() -> Option<Arc<Task>>,
+        steal_global: fn() -> Option<TaskRef>,
+        steal_local: fn() -> Option<TaskRef>,
         steal_reactor: fn() -> (),
     ) -> Self {
         let queue = LocalQueue::new();
@@ -43,7 +41,6 @@ impl Worker {
             index,
             queue,
             stealer,
-            parker,
             unparker,
             tick: 0,
         }
@@ -53,7 +50,7 @@ impl Worker {
         self.index
     }
 
-    pub fn get_stealer(&self) -> deque::Stealer<Arc<Task>> {
+    pub fn get_stealer(&self) -> deque::Stealer<TaskRef> {
         self.stealer.clone()
     }
 
@@ -82,7 +79,7 @@ impl Worker {
             self.park()
         }
     }
-    fn steal(&mut self) -> Option<Arc<Task>> {
+    fn steal(&mut self) -> Option<TaskRef> {
         // 0. check LIFO slot first
         let task = ExecutorContext::with(|ctx| ctx.lifo_slot.take());
         if let Some(task) = task {
@@ -123,23 +120,24 @@ impl Worker {
         None
     }
 
-    fn execute(&mut self, task: Arc<Task>) {
-        let waker = futures::task::waker_ref(&task);
+    fn execute(&mut self, task: TaskRef) {
+        let waker = task.waker();
         let mut cx = std::task::Context::from_waker(&waker);
 
-        let future_ptr = task.future.get();
-        
-        // Wrap execution in catch_unwind to ensure worker thread survivability
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            unsafe { (*future_ptr).poll(&mut cx) }
-        }));
+        // Reset notified flag before poll.
+        unsafe {
+            let header = task.as_ptr().as_ref();
+            header.notified.store(false, Ordering::SeqCst);
 
-        match result {
-            Ok(Poll::Ready(_)) => {}
-            Ok(Poll::Pending) => {}
-            Err(_) => {
-                // Task panicked. 
-                // In a production runtime, we'd log this or propagate to a join handle.
+            let vtable = header.vtable;
+
+            // Wrap execution in catch_unwind to ensure worker thread survivability
+            let result = catch_unwind(AssertUnwindSafe(|| (vtable.poll)(task.as_ptr(), &mut cx)));
+
+            // Production: We don't necessarily handle Poll::Ready here
+            // because the future itself is responsible for its own Ready cleanup
+            // via the TaskRef Drop (vtable.drop_task).
+            if let Err(_) = result {
                 eprintln!("Taiga: task panicked on worker {}", self.index);
             }
         }

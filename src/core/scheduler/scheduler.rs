@@ -5,8 +5,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::core::executor::context::Context as ExecutorContext;
 
 use crate::core::scheduler::global_queue::GlobalQueue;
-use crate::core::scheduler::worker_pool::Pool;
 use crate::core::scheduler::task::Task;
+use crate::core::scheduler::worker_pool::Pool;
 
 pub(crate) struct Scheduler {
     pub(crate) global_queue: GlobalQueue,
@@ -34,10 +34,13 @@ impl Scheduler {
     {
         if !self.shutdown.load(Ordering::Acquire) {
             let scheduler = self.clone();
-            let task = Task::new(async move {
-                let _ = future.await;
-            }, scheduler);
-            
+            let task = Task::spawn(
+                async move {
+                    let _ = future.await;
+                },
+                scheduler,
+            );
+
             // Try to push to the local worker LIFO slot first
             if !ExecutorContext::try_push_local(task.clone()) {
                 self.global_queue.push(task);
@@ -55,7 +58,7 @@ impl Scheduler {
         self.shutdown.load(Ordering::Acquire)
     }
 
-    pub fn steal_global(&self) -> Option<Arc<Task>> {
+    pub fn steal_global(&self) -> Option<crate::core::scheduler::task::TaskRef> {
         self.global_queue.steal()
     }
 
@@ -71,13 +74,13 @@ mod tests {
     #[test]
     fn test_scheduler_spawn() {
         let scheduler = Arc::new(Scheduler::new());
-        
+
         // Initially empty
         assert!(scheduler.steal_global().is_none());
-        
+
         // Spawn a task
         scheduler.spawn_internal(async { 1 + 1 });
-        
+
         // Should be in global queue
         assert!(scheduler.steal_global().is_some());
         assert!(scheduler.steal_global().is_none());
