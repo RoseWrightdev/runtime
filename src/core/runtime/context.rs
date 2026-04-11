@@ -1,4 +1,6 @@
-struct Context {}
+struct Context {
+    
+}
 
 impl Context {
     pub fn new() {

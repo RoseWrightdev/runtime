@@ -1,2 +1,7 @@
-pub(crate) struct LocalQueue {}
-impl LocalQueue {}
+pub(crate) struct LocalQueue {
+
+}
+
+impl LocalQueue {
+    
+}

@@ -1,2 +1,7 @@
-pub(crate) struct Pool {}
-impl Pool {}
+pub(crate) struct Pool {
+
+}
+
+impl Pool {
+    
+}

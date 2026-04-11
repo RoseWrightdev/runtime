@@ -1,11 +1,15 @@
+use std::any::Any;
+use std::future::Future;
+use std::sync::Arc;
+use crate::core::scheduler::scheduler::Scheduler;
 
-struct Runtime {
-    scheduler: &Scheduler
+struct Runtime<'a> {
+    scheduler: &'a Scheduler
 }
 
-impl Runtime {
-    pub fn new() -> Self {
-        
+impl<'a> Runtime<'a> {
+    pub fn new(scheduler: &'a Scheduler) -> Self {
+        Self { scheduler }
     }
     
     pub fn spawn<F, T>(self: &Arc<Self>, future: F) 
