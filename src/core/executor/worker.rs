@@ -6,7 +6,7 @@ use std::task::Waker;
 use crossbeam::deque::{self, Stealer};
 use crossbeam::sync::{Parker, Unparker};
 
-use crate::core::executor::context::Context as ExecutorContext;
+use crate::core::executor::context::Context;
 use crate::core::executor::local_queue::LocalQueue;
 use crate::core::runtime::context::Context as RuntimeContext;
 use crate::core::scheduler::task::TaskRef;
@@ -21,7 +21,10 @@ pub(crate) struct Worker {
     stealer: Stealer<TaskRef>,
     unparker: Unparker,
     tick: usize,
+    context: Context,
 }
+
+unsafe impl Send for Worker {}
 
 impl Worker {
     pub fn new(
@@ -45,6 +48,13 @@ impl Worker {
             stealer,
             unparker,
             tick: 0,
+            context: Context {
+                task_pool: crate::core::executor::task_pool::Pool::new(),
+                worker_index: Some(index),
+                stealers: None,
+                lifo_slot: None,
+                local_queue_ptr: None, // Will be set in run()
+            },
         }
     }
 
@@ -65,6 +75,15 @@ impl Worker {
     }
 
     pub fn run(&mut self) {
+        // Ensure the local_queue_ptr points to our actual queue address
+        // which may have changed if we were moved across threads.
+        self.context.local_queue_ptr = Some(&mut self.queue as *mut _);
+
+        // Set up the fast-path TLS bridge
+        unsafe {
+            Context::set_fast_path(&mut self.context as *mut _);
+        }
+
         loop {
             // Check for shutdown signal from global scheduler
             if let Some(scheduler) = RuntimeContext::current() {
@@ -80,12 +99,16 @@ impl Worker {
 
             self.park()
         }
+
+        // Clean up bridge
+        unsafe {
+            Context::set_fast_path(std::ptr::null_mut());
+        }
     }
 
     fn steal(&mut self) -> Option<TaskRef> {
         // 0. check LIFO slot first
-        let task = ExecutorContext::with(|ctx| ctx.lifo_slot.take());
-        if let Some(task) = task {
+        if let Some(task) = self.pop_lifo() {
             return Some(task);
         }
 
@@ -156,4 +179,36 @@ impl Worker {
     }
 
     fn park(&mut self) {}
+
+    pub fn push_lifo(&mut self, task: TaskRef) {
+        if let Some(old_task) = self.context.lifo_slot.replace(task) {
+            self.queue.push(old_task);
+        }
+    }
+
+    pub fn pop_lifo(&mut self) -> Option<TaskRef> {
+        self.context.lifo_slot.take()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::scheduler::scheduler::Scheduler;
+    use crate::core::scheduler::task::Task;
+    use std::sync::Arc;
+
+    #[test]
+    fn test_worker_context_isolation() {
+        let scheduler = Arc::new(Scheduler::new());
+        let mut worker = Worker::new(0, || None, || None, || {});
+        let task = Task::spawn(async {}, scheduler);
+
+        // This works directly without TLS because Worker owns its context
+        worker.push_lifo(task.clone());
+        let popped = worker.pop_lifo();
+
+        assert!(popped.is_some());
+        assert_eq!(popped.unwrap().as_ptr(), task.as_ptr());
+    }
 }

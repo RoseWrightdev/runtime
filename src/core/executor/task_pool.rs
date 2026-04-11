@@ -9,6 +9,8 @@ pub(crate) struct Pool {
     buckets: [Vec<*mut u8>; 11],
 }
 
+unsafe impl Send for Pool {}
+
 impl Pool {
     pub fn new() -> Self {
         let buckets = [

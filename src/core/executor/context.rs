@@ -5,8 +5,12 @@ use std::any::Any;
 use std::cell::RefCell;
 use std::sync::Arc;
 
+use std::cell::Cell;
+use std::ptr;
+
 thread_local! {
-    static CURRENT_CONTEXT: RefCell<Context> = RefCell::new(Context::new());
+    static SLOW_CONTEXT: RefCell<Context> = RefCell::new(Context::new());
+    static FAST_CONTEXT: Cell<*mut Context> = Cell::new(ptr::null_mut());
 }
 
 pub(crate) struct Context {
@@ -19,6 +23,8 @@ pub(crate) struct Context {
     // Pointer to the local queue, safe because it's only accessed on the same thread
     pub(crate) local_queue_ptr: Option<*mut LocalQueue>,
 }
+
+unsafe impl Send for Context {}
 
 impl Context {
     pub fn new() -> Self {
@@ -48,8 +54,17 @@ impl Context {
         })
     }
 
+    pub(crate) unsafe fn set_fast_path(ptr: *mut Context) {
+        FAST_CONTEXT.with(|ctx| ctx.set(ptr));
+    }
+
     pub(crate) fn with<R, F: FnOnce(&mut Context) -> R>(f: F) -> R {
-        CURRENT_CONTEXT.with(|ctx| f(&mut ctx.borrow_mut()))
+        let fast_ptr = FAST_CONTEXT.with(|ctx| ctx.get());
+        if !fast_ptr.is_null() {
+            unsafe { f(&mut *fast_ptr) }
+        } else {
+            SLOW_CONTEXT.with(|ctx| f(&mut ctx.borrow_mut()))
+        }
     }
 }
 
