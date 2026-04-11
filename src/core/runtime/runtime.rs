@@ -1,4 +1,5 @@
 use crate::core::runtime::context::Context;
+use crate::core::scheduler::join::JoinHandle;
 use crate::core::scheduler::scheduler::Scheduler;
 use std::any::Any;
 use std::future::Future;
@@ -19,12 +20,12 @@ impl Runtime {
         Self { scheduler }
     }
 
-    pub fn spawn<F, T>(&self, future: F)
+    pub fn spawn<F, T>(&self, future: F) -> JoinHandle<T>
     where
         F: Future<Output = T> + Send + 'static,
         T: Any + Send + 'static,
     {
-        self.scheduler.spawn_internal(future);
+        self.scheduler.spawn_internal(future)
     }
 
     pub fn shutdown(&self) {

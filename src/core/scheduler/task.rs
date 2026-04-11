@@ -2,7 +2,7 @@ use std::{
     alloc::Layout,
     ptr::{self, NonNull},
     sync::Arc,
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, AtomicU8, Ordering},
     task::{Context as StdContext, RawWaker, RawWakerVTable, Waker},
 };
 
@@ -16,13 +16,16 @@ pub(crate) struct TaskHeader {
     pub(crate) vtable: &'static TaskVTable,
     pub(crate) layout: Layout,
     pub(crate) future_offset: usize,
+    pub(crate) result_state: AtomicU8, // 0: running, 1: completed, 2: panicked, 3: joined
+    pub(crate) join_waker: AtomicPtr<()>,
 }
 
 pub(crate) struct TaskVTable {
     pub(crate) poll: unsafe fn(NonNull<TaskHeader>, &mut StdContext<'_>),
     pub(crate) wake: unsafe fn(NonNull<TaskHeader>),
     pub(crate) wake_by_ref: unsafe fn(NonNull<TaskHeader>),
-    pub(crate) drop_task: unsafe fn(NonNull<TaskHeader>),
+    pub(crate) drop_payload: unsafe fn(NonNull<TaskHeader>),
+    pub(crate) read_result: unsafe fn(NonNull<TaskHeader>, *mut u8),
 }
 
 pub struct TaskRef {
@@ -65,7 +68,7 @@ impl Drop for TaskRef {
             if self.ptr.as_ref().ref_count.fetch_sub(1, Ordering::Release) == 1 {
                 self.ptr.as_ref().ref_count.load(Ordering::Acquire);
                 let vtable = self.ptr.as_ref().vtable;
-                (vtable.drop_task)(self.ptr);
+                (vtable.drop_payload)(self.ptr);
 
                 let layout = self.ptr.as_ref().layout;
                 let ptr = self.ptr.as_ptr() as *mut u8;
@@ -79,13 +82,20 @@ impl Drop for TaskRef {
 pub struct Task;
 
 impl Task {
-    pub(crate) fn spawn<F>(future: F, scheduler: Arc<Scheduler>) -> TaskRef
+    pub(crate) fn spawn<F, T>(future: F, scheduler: Arc<Scheduler>) -> TaskRef
     where
-        F: Future<Output = ()> + Send + 'static,
+        F: Future<Output = T> + Send + 'static,
+        T: Send + 'static,
     {
         let header_layout = Layout::new::<TaskHeader>();
         let future_layout = Layout::new::<F>();
-        let (joint_layout, future_offset) = header_layout.extend(future_layout).unwrap();
+        let result_layout = Layout::new::<T>();
+        
+        let size = std::cmp::max(future_layout.size(), result_layout.size());
+        let align = std::cmp::max(future_layout.align(), result_layout.align());
+        let payload_layout = Layout::from_size_align(size, align).unwrap();
+
+        let (joint_layout, future_offset) = header_layout.extend(payload_layout).unwrap();
         let joint_layout = joint_layout.pad_to_align();
 
         let ptr = Context::with(|ctx| ctx.task_pool.allocate(joint_layout));
@@ -99,13 +109,16 @@ impl Task {
                     notified: AtomicBool::new(false),
                     scheduler,
                     vtable: &TaskVTable {
-                        poll: Self::poll_fn::<F>,
+                        poll: Self::poll_fn::<F, T>,
                         wake: Self::wake_fn,
                         wake_by_ref: Self::wake_by_ref_fn,
-                        drop_task: Self::drop_task_fn::<F>,
+                        drop_payload: Self::drop_payload_fn::<F, T>,
+                        read_result: Self::read_result_fn::<T>,
                     },
                     layout: joint_layout,
                     future_offset,
+                    result_state: AtomicU8::new(0), // Running
+                    join_waker: AtomicPtr::new(ptr::null_mut()),
                 },
             );
 
@@ -116,7 +129,11 @@ impl Task {
         }
     }
 
-    unsafe fn poll_fn<F: Future<Output = ()>>(ptr: NonNull<TaskHeader>, cx: &mut StdContext<'_>) {
+    unsafe fn poll_fn<F, T>(ptr: NonNull<TaskHeader>, cx: &mut StdContext<'_>)
+    where
+        F: Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
         let (future_ptr, waker) = unsafe {
             let header = ptr.as_ref();
             let future_ptr = (ptr.as_ptr() as *mut u8).add(header.future_offset) as *mut F;
@@ -126,7 +143,26 @@ impl Task {
         let future = unsafe { &mut *future_ptr };
         let mut cx = std::task::Context::from_waker(waker);
         unsafe {
-            let _ = std::pin::Pin::new_unchecked(future).poll(&mut cx);
+            match std::pin::Pin::new_unchecked(future).poll(&mut cx) {
+                std::task::Poll::Ready(val) => {
+                    let header = ptr.as_ref();
+                    // Drop future to reclaim resources, then write result
+                    ptr::drop_in_place(future_ptr);
+                    
+                    let result_ptr = (ptr.as_ptr() as *mut u8).add(header.future_offset) as *mut T;
+                    ptr::write(result_ptr, val);
+                    
+                    header.result_state.store(1, Ordering::SeqCst); // Completed
+                    
+                    // Wake the joiner if present
+                    let waker_ptr = header.join_waker.swap(ptr::null_mut(), Ordering::SeqCst);
+                    if !waker_ptr.is_null() {
+                        let waker = Box::from_raw(waker_ptr as *mut Waker);
+                        waker.wake();
+                    }
+                }
+                std::task::Poll::Pending => {}
+            }
         }
     }
 
@@ -146,12 +182,33 @@ impl Task {
         }
     }
 
-    unsafe fn drop_task_fn<F: Future<Output = ()>>(ptr: NonNull<TaskHeader>) {
+    unsafe fn drop_payload_fn<F, T>(ptr: NonNull<TaskHeader>) {
         unsafe {
             let header = ptr.as_ref();
-            let future_ptr = (ptr.as_ptr() as *mut u8).add(header.future_offset) as *mut F;
-            ptr::drop_in_place(future_ptr);
+            let state = header.result_state.load(Ordering::Acquire);
+            
+            if state == 0 {
+                // Future is still there
+                let future_ptr = (ptr.as_ptr() as *mut u8).add(header.future_offset) as *mut F;
+                ptr::drop_in_place(future_ptr);
+            } else if state == 1 {
+                // Result is there
+                let result_ptr = (ptr.as_ptr() as *mut u8).add(header.future_offset) as *mut T;
+                ptr::drop_in_place(result_ptr);
+            }
+            // State 3 (Joined) means result was already moved out.
+
             ptr::drop_in_place(ptr.as_ptr());
+        }
+    }
+
+    unsafe fn read_result_fn<T>(ptr: NonNull<TaskHeader>, dest: *mut u8) {
+        unsafe {
+            let header = ptr.as_ref();
+            let result_ptr = (ptr.as_ptr() as *mut u8).add(header.future_offset) as *mut T;
+            let dest_ptr = dest as *mut T;
+            ptr::copy_nonoverlapping(result_ptr, dest_ptr, 1);
+            header.result_state.store(3, Ordering::SeqCst); // Joined
         }
     }
 

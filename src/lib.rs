@@ -4,19 +4,19 @@ pub mod time;
 
 use crate::core::runtime::context::Context as RuntimeContext;
 pub use crate::core::runtime::runtime::Runtime;
+pub use crate::core::scheduler::join::JoinHandle;
 
+use std::any::Any;
 use std::future::Future;
 
-pub fn spawn<F, T>(future: F)
+pub fn spawn<F, T>(future: F) -> JoinHandle<T>
 where
     F: Future<Output = T> + Send + 'static,
-    T: Send + 'static,
+    T: Any + Send + 'static,
 {
-    if let Some(scheduler) = RuntimeContext::current() {
-        scheduler.spawn_internal(future);
-    } else {
-        panic!("spawn called outside of taiga runtime context");
-    }
+    RuntimeContext::current()
+        .expect("Taiga: spawn called outside of a runtime context")
+        .spawn_internal(future)
 }
 
 pub fn block_on<F>(future: F) -> F::Output
@@ -158,9 +158,9 @@ mod tests {
 
             order.lock().unwrap().push('A');
         });
-        
+
         // Wait for workers to finish B and C (they were queued during A)
-        // Since we have a single worker and we know the order, we can just wait 
+        // Since we have a single worker and we know the order, we can just wait
         // for the vector to reach size 3.
         let mut attempts = 0;
         loop {
@@ -178,11 +178,32 @@ mod tests {
         }
 
         let final_order = execution_order.lock().unwrap();
-        // B (slot) should run before C (queue)
         assert_eq!(
             *final_order,
             vec!['A', 'B', 'C'],
             "High priority task B should have run before C"
         );
+    }
+
+    #[test]
+    fn test_join_handle_success() {
+        let result = block_on(async {
+            let handle = spawn(async { 42 });
+            handle.await.unwrap()
+        });
+        assert_eq!(result, 42);
+    }
+
+    #[test]
+    fn test_join_handle_panic() {
+        let result = block_on(async {
+            let handle = spawn(async {
+                panic!("intentional panic");
+                #[allow(unreachable_code)]
+                42
+            });
+            handle.await
+        });
+        assert!(result.is_err());
     }
 }

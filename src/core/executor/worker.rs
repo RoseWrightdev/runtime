@@ -1,5 +1,7 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::ptr;
 use std::sync::atomic::Ordering;
+use std::task::Waker;
 
 use crossbeam::deque::{self, Stealer};
 use crossbeam::sync::{Parker, Unparker};
@@ -79,6 +81,7 @@ impl Worker {
             self.park()
         }
     }
+
     fn steal(&mut self) -> Option<TaskRef> {
         // 0. check LIFO slot first
         let task = ExecutorContext::with(|ctx| ctx.lifo_slot.take());
@@ -138,6 +141,15 @@ impl Worker {
             // because the future itself is responsible for its own Ready cleanup
             // via the TaskRef Drop (vtable.drop_task).
             if let Err(_) = result {
+                header.result_state.store(2, Ordering::SeqCst); // Panicked
+
+                // Wake the joiner if present
+                let waker_ptr = header.join_waker.swap(ptr::null_mut(), Ordering::SeqCst);
+                if !waker_ptr.is_null() {
+                    let waker = Box::from_raw(waker_ptr as *mut Waker);
+                    waker.wake();
+                }
+
                 eprintln!("Taiga: task panicked on worker {}", self.index);
             }
         }

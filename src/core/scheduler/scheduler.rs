@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::core::executor::context::Context as ExecutorContext;
 
 use crate::core::scheduler::global_queue::GlobalQueue;
+use crate::core::scheduler::join::JoinHandle;
 use crate::core::scheduler::task::Task;
 use crate::core::scheduler::worker_pool::Pool;
 
@@ -27,25 +28,25 @@ impl Scheduler {
         }
     }
 
-    pub fn spawn_internal<F, T>(self: &Arc<Self>, future: F)
+    pub fn spawn_internal<F, T>(self: &Arc<Self>, future: F) -> JoinHandle<T>
     where
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
-        if !self.shutdown.load(Ordering::Acquire) {
-            let scheduler = self.clone();
-            let task = Task::spawn(
-                async move {
-                    let _ = future.await;
-                },
-                scheduler,
-            );
-
-            // Try to push to the local worker LIFO slot first
-            if !ExecutorContext::try_push_local(task.clone()) {
-                self.global_queue.push(task);
-            }
+        if self.shutdown.load(Ordering::Acquire) {
+            panic!("Spawned on shutdown scheduler");
         }
+
+        let scheduler = self.clone();
+        let task = Task::spawn(future, scheduler);
+        let join_handle = JoinHandle::new(task.clone());
+
+        // Try to push to the local worker LIFO slot first
+        if !ExecutorContext::try_push_local(task.clone()) {
+            self.global_queue.push(task);
+        }
+
+        join_handle
     }
 
     pub fn shutdown(&self) {
