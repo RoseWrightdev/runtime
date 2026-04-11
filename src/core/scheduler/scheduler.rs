@@ -6,6 +6,7 @@ use crossbeam::utils::CachePadded;
 
 use crate::core::executor::context::Context as ExecutorContext;
 
+use crate::core::reactor::Reactor;
 use crate::core::scheduler::global_queue::GlobalQueue;
 use crate::core::scheduler::join::JoinHandle;
 use crate::core::scheduler::task::{Task, TaskRef};
@@ -18,6 +19,7 @@ pub(crate) struct Scheduler {
     shutdown: CachePadded<AtomicBool>,
     searching_workers: AtomicUsize,
     parked_workers: AtomicUsize,
+    pub(crate) reactor: Arc<Reactor>,
 }
 
 impl Scheduler {
@@ -33,6 +35,7 @@ impl Scheduler {
             shutdown: CachePadded::new(AtomicBool::new(false)),
             searching_workers: AtomicUsize::new(0),
             parked_workers: AtomicUsize::new(0),
+            reactor: Arc::new(Reactor::new().expect("Failed to create Reactor")),
         }
     }
 
@@ -79,7 +82,7 @@ impl Scheduler {
     pub fn notify_adaptive(&self) {
         let len = self.global_queue.len();
         let searching = self.searching_workers.load(Ordering::Acquire);
-        
+
         if len > searching {
             let to_wake = (len - searching).min(self.parked_workers.load(Ordering::Acquire));
             if to_wake > 0 {

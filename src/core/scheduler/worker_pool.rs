@@ -74,10 +74,6 @@ impl Pool {
         }
     }
 
-    pub fn drive_reactor() {
-        // Will be implemented with Mio - currently a no-op to allow testing
-    }
-
     pub fn steal_global() -> Option<TaskRef> {
         RuntimeContext::current().and_then(|rt| rt.steal_global())
     }
@@ -100,6 +96,12 @@ impl Pool {
             }
             None
         })
+    }
+
+    pub fn drive_reactor() {
+        if let Some(scheduler) = RuntimeContext::current() {
+            let _ = scheduler.reactor.drive();
+        }
     }
 
     pub(crate) fn unpark_all(&self) {
