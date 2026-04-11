@@ -21,7 +21,7 @@ impl Pool {
                 index,
                 Self::steal_global,
                 Self::steal_local,
-                Self::drive_reactor, // We can stub this for now
+                Self::drive_reactor,
             );
 
             stealers.push(worker.get_stealer());
