@@ -4,12 +4,14 @@ use std::sync::Arc;
 use crate::core::scheduler::scheduler::Scheduler;
 use crate::core::runtime::context::Context;
 
-struct Runtime {
+pub struct Runtime {
     scheduler: Arc<Scheduler>
 }
 
 impl Runtime {
-    pub fn new(scheduler: Arc<Scheduler>) -> Self {
+    pub fn new() -> Self {
+        let scheduler = Arc::new(Scheduler::new());
+        scheduler.start();
         Self { scheduler }
     }
     
