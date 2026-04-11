@@ -1,18 +1,20 @@
 use crossbeam::deque::Stealer;
 use crossbeam::sync::Unparker;
 use std::sync::Arc;
-
-use crate::core::executor::local_queue::LocalQueue;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::core::executor::context::Context as ExecutorContext;
+use crate::core::executor::local_queue::LocalQueue;
 use crate::core::executor::worker::Worker;
 use crate::core::runtime::context::Context as RuntimeContext;
+use crate::core::scheduler::scheduler::Scheduler;
 use crate::core::scheduler::task::TaskRef;
 
 pub(crate) struct Pool {
     workers: std::sync::Mutex<Vec<Worker>>,
     stealers: Arc<[Stealer<TaskRef>]>,
     unparkers: Vec<Unparker>,
+    next_unparker: AtomicUsize,
 }
 
 impl Pool {
@@ -38,10 +40,11 @@ impl Pool {
             workers: std::sync::Mutex::new(workers),
             stealers: Arc::from(stealers),
             unparkers,
+            next_unparker: AtomicUsize::new(0),
         }
     }
 
-    pub fn start(&self, scheduler: Arc<crate::core::scheduler::scheduler::Scheduler>) {
+    pub fn start(&self, scheduler: Arc<Scheduler>) {
         let workers = {
             let mut lock = self.workers.lock().unwrap();
             std::mem::take(&mut *lock)
@@ -103,6 +106,14 @@ impl Pool {
         for unparker in &self.unparkers {
             unparker.unpark();
         }
+    }
+
+    pub(crate) fn notify_one(&self) {
+        if self.unparkers.is_empty() {
+            return;
+        }
+        let index = self.next_unparker.fetch_add(1, Ordering::Relaxed) % self.unparkers.len();
+        self.unparkers[index].unpark();
     }
 }
 

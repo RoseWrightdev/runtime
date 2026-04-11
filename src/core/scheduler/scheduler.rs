@@ -1,6 +1,6 @@
 use std::future::Future;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crossbeam::utils::CachePadded;
 
@@ -8,7 +8,7 @@ use crate::core::executor::context::Context as ExecutorContext;
 
 use crate::core::scheduler::global_queue::GlobalQueue;
 use crate::core::scheduler::join::JoinHandle;
-use crate::core::scheduler::task::Task;
+use crate::core::scheduler::task::{Task, TaskRef};
 use crate::core::scheduler::worker_pool::Pool;
 
 #[repr(align(64))]
@@ -16,10 +16,12 @@ pub(crate) struct Scheduler {
     pub(crate) global_queue: CachePadded<GlobalQueue>,
     worker_pool: CachePadded<Pool>,
     shutdown: CachePadded<AtomicBool>,
+    searching_workers: AtomicUsize,
 }
 
 impl Scheduler {
-    pub fn new() -> Self {
+    #[allow(dead_code)]
+    pub(crate) fn new() -> Self {
         Self::new_with_workers(num_cpus::get())
     }
 
@@ -28,6 +30,7 @@ impl Scheduler {
             global_queue: CachePadded::new(GlobalQueue::new()),
             worker_pool: CachePadded::new(Pool::new(num_workers)),
             shutdown: CachePadded::new(AtomicBool::new(false)),
+            searching_workers: AtomicUsize::new(0),
         }
     }
 
@@ -47,6 +50,7 @@ impl Scheduler {
         // Try to push to the local worker LIFO slot first
         if !ExecutorContext::try_push_local(task.clone()) {
             self.global_queue.push(task);
+            self.notify_one();
         }
 
         join_handle
@@ -62,12 +66,26 @@ impl Scheduler {
         self.shutdown.load(Ordering::Acquire)
     }
 
-    pub fn steal_global(&self) -> Option<crate::core::scheduler::task::TaskRef> {
+    pub fn steal_global(&self) -> Option<TaskRef> {
         self.global_queue.steal()
     }
 
     pub fn start(self: &Arc<Self>) {
         self.worker_pool.start(self.clone());
+    }
+
+    pub fn notify_one(&self) {
+        if self.searching_workers.load(Ordering::Acquire) == 0 {
+            self.worker_pool.notify_one();
+        }
+    }
+
+    pub fn incr_searching(&self) {
+        self.searching_workers.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub fn decr_searching(&self) {
+        self.searching_workers.fetch_sub(1, Ordering::SeqCst);
     }
 }
 

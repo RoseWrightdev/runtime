@@ -23,6 +23,7 @@ pub(crate) struct Worker {
     unparker: Unparker,
     tick: usize,
     context: Context,
+    pub(crate) parker: Option<Parker>,
 }
 
 unsafe impl Send for Worker {}
@@ -57,6 +58,7 @@ impl Worker {
                 ctx.local_queue_ptr = None; // Will be set in run()
                 ctx
             },
+            parker: Some(parker),
         }
     }
 
@@ -99,7 +101,16 @@ impl Worker {
                 continue;
             }
 
-            self.park()
+            // No work found, attempt to enter searching state
+            if let Some(scheduler) = RuntimeContext::current() {
+                if let Some(task) = self.search_and_park(&scheduler) {
+                    self.execute(task);
+                    continue;
+                }
+            } else {
+                // Fallback for non-runtime threads (rare)
+                self.park();
+            }
         }
 
         // Clean up bridge
@@ -180,7 +191,26 @@ impl Worker {
         }
     }
 
-    fn park(&mut self) {}
+    fn search_and_park(&mut self, scheduler: &crate::core::scheduler::scheduler::Scheduler) -> Option<TaskRef> {
+        scheduler.incr_searching();
+
+        // Last ditch effort: steal again while marked as searching
+        if let Some(task) = self.steal() {
+            scheduler.decr_searching();
+            return Some(task);
+        }
+
+        // Still nothing, actually park the thread
+        self.park();
+        scheduler.decr_searching();
+        None
+    }
+
+    fn park(&mut self) {
+        if let Some(parker) = self.parker.as_ref() {
+            parker.park();
+        }
+    }
 
     #[cfg(test)]
     pub fn push_lifo(&mut self, task: TaskRef) {
@@ -213,5 +243,34 @@ mod tests {
 
         assert!(popped.is_some());
         assert_eq!(popped.unwrap().as_ptr(), task.as_ptr());
+    }
+
+    #[test]
+    fn test_worker_parking() {
+        use std::time::Duration;
+        
+        let scheduler = Arc::new(Scheduler::new());
+        let mut worker = Worker::new(0, || None, |_| None, || {});
+        
+        let unparker = worker.get_unparker();
+        let scheduler_clone = scheduler.clone();
+        let handle = std::thread::spawn(move || {
+            let _rt_guard = RuntimeContext::enter(scheduler_clone);
+            worker.run();
+        });
+
+        // Give worker time to start and (hopefully) park
+        std::thread::sleep(Duration::from_millis(100));
+        
+        // Unpark it
+        unparker.unpark();
+        
+        // Signal shutdown so it actually exits after unpark
+        scheduler.shutdown();
+        unparker.unpark(); // Secondary unpark to ensure it sees shutdown
+        
+        // Wait for thread to finish
+        let result = handle.join();
+        assert!(result.is_ok(), "Worker thread should have exited cleanly after unpark");
     }
 }

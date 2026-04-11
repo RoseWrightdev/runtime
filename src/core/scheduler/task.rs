@@ -221,6 +221,7 @@ impl Task {
         if !Context::try_push_local(this.clone()) {
             let scheduler = unsafe { this.ptr.as_ref().scheduler.clone() };
             scheduler.global_queue.push(this);
+            scheduler.notify_one();
         }
     }
 }
@@ -342,7 +343,7 @@ mod tests {
             ref_count: CachePadded::new(AtomicUsize::new(1)),
             notified: CachePadded::new(AtomicBool::new(false)),
             scheduler: Arc::new(Scheduler::new()),
-            vtable: unsafe { std::mem::transmute(1usize) }, // Use non-null for reference
+            vtable: unsafe { &*std::ptr::with_exposed_provenance::<TaskVTable>(1usize) }, // Use non-null for reference
             layout: Layout::new::<()>(),
             future_offset: 0,
             result_state: CachePadded::new(AtomicU8::new(0)),
