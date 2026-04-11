@@ -6,7 +6,7 @@ use crate::core::scheduler::worker_pool::Pool;
 use crate::core::scheduler::task::Task;
 
 pub(crate) struct Scheduler {
-    global_queue: GlobalQueue,
+    pub(crate) global_queue: GlobalQueue,
     worker_pool: Pool,
     shutdown: bool,
 }

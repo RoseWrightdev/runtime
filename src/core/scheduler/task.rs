@@ -105,9 +105,9 @@ unsafe impl Sync for Task {}
 unsafe impl Send for Task {}
 
 impl ArcWake for Task {
-    fn wake_by_ref(_arc_self: &Arc<Self>) {
+    fn wake_by_ref(arc_self: &Arc<Self>) {
         // Just push straight to the global scheduler queue 
         // without all the LIFO optimizations for now.
-        unimplemented!()
+        arc_self.scheduler.global_queue.push(arc_self.clone());
     }
 }
