@@ -1,23 +1,28 @@
 use std::{
     alloc::Layout,
+    future::Future,
     ptr::{self, NonNull},
     sync::Arc,
-    sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, AtomicU8, Ordering},
+    sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicUsize, Ordering},
     task::{Context as StdContext, RawWaker, RawWakerVTable, Waker},
 };
+
+use crossbeam::utils::CachePadded;
 
 use crate::core::executor::context::Context;
 use crate::core::scheduler::scheduler::Scheduler;
 
+#[repr(align(64))]
 pub(crate) struct TaskHeader {
-    pub(crate) ref_count: AtomicUsize,
-    pub(crate) notified: AtomicBool,
+    pub(crate) ref_count: CachePadded<AtomicUsize>,
+    pub(crate) notified: CachePadded<AtomicBool>,
+    pub(crate) result_state: CachePadded<AtomicU8>, // 0: running, 1: completed, 2: panicked, 3: joined
+    pub(crate) join_waker: CachePadded<AtomicPtr<()>>,
+
     pub(crate) scheduler: Arc<Scheduler>,
     pub(crate) vtable: &'static TaskVTable,
     pub(crate) layout: Layout,
     pub(crate) future_offset: usize,
-    pub(crate) result_state: AtomicU8, // 0: running, 1: completed, 2: panicked, 3: joined
-    pub(crate) join_waker: AtomicPtr<()>,
 }
 
 pub(crate) struct TaskVTable {
@@ -90,7 +95,7 @@ impl Task {
         let header_layout = Layout::new::<TaskHeader>();
         let future_layout = Layout::new::<F>();
         let result_layout = Layout::new::<T>();
-        
+
         let size = std::cmp::max(future_layout.size(), result_layout.size());
         let align = std::cmp::max(future_layout.align(), result_layout.align());
         let payload_layout = Layout::from_size_align(size, align).unwrap();
@@ -105,8 +110,8 @@ impl Task {
             ptr::write(
                 header_ptr,
                 TaskHeader {
-                    ref_count: AtomicUsize::new(1),
-                    notified: AtomicBool::new(false),
+                    ref_count: CachePadded::new(AtomicUsize::new(1)),
+                    notified: CachePadded::new(AtomicBool::new(false)),
                     scheduler,
                     vtable: &TaskVTable {
                         poll: Self::poll_fn::<F, T>,
@@ -117,8 +122,8 @@ impl Task {
                     },
                     layout: joint_layout,
                     future_offset,
-                    result_state: AtomicU8::new(0), // Running
-                    join_waker: AtomicPtr::new(ptr::null_mut()),
+                    result_state: CachePadded::new(AtomicU8::new(0)), // Running
+                    join_waker: CachePadded::new(AtomicPtr::new(ptr::null_mut())),
                 },
             );
 
@@ -148,12 +153,12 @@ impl Task {
                     let header = ptr.as_ref();
                     // Drop future to reclaim resources, then write result
                     ptr::drop_in_place(future_ptr);
-                    
+
                     let result_ptr = (ptr.as_ptr() as *mut u8).add(header.future_offset) as *mut T;
                     ptr::write(result_ptr, val);
-                    
+
                     header.result_state.store(1, Ordering::SeqCst); // Completed
-                    
+
                     // Wake the joiner if present
                     let waker_ptr = header.join_waker.swap(ptr::null_mut(), Ordering::SeqCst);
                     if !waker_ptr.is_null() {
@@ -186,7 +191,7 @@ impl Task {
         unsafe {
             let header = ptr.as_ref();
             let state = header.result_state.load(Ordering::Acquire);
-            
+
             if state == 0 {
                 // Future is still there
                 let future_ptr = (ptr.as_ptr() as *mut u8).add(header.future_offset) as *mut F;
@@ -320,6 +325,48 @@ mod tests {
         );
 
         assert!(future_offset >= std::mem::size_of::<TaskHeader>());
-        assert!(future_offset < 256);
+        assert!(future_offset < 1024);
+    }
+
+    #[test]
+    fn test_header_physical_alignment() {
+        use std::mem::align_of;
+
+        // TaskHeader should be meaningfully aligned
+        assert!(
+            align_of::<TaskHeader>() >= 64,
+            "TaskHeader should have 64-byte alignment"
+        );
+
+        let header = TaskHeader {
+            ref_count: CachePadded::new(AtomicUsize::new(1)),
+            notified: CachePadded::new(AtomicBool::new(false)),
+            scheduler: Arc::new(Scheduler::new()),
+            vtable: unsafe { std::mem::transmute(1usize) }, // Use non-null for reference
+            layout: Layout::new::<()>(),
+            future_offset: 0,
+            result_state: CachePadded::new(AtomicU8::new(0)),
+            join_waker: CachePadded::new(AtomicPtr::new(ptr::null_mut())),
+        };
+
+        let base = &header as *const _ as usize;
+        let notified_addr = &header.notified as *const _ as usize;
+        let join_waker_addr = &header.join_waker as *const _ as usize;
+
+        let notified_offset = notified_addr - base;
+        let join_waker_offset = join_waker_addr - base;
+
+        // Verify isolation
+        let delta = if join_waker_offset > notified_offset {
+            join_waker_offset - notified_offset
+        } else {
+            notified_offset - join_waker_offset
+        };
+
+        assert!(
+            delta >= 64,
+            "Contended fields (notified/join_waker) should be in separate cache lines (delta: {})",
+            delta
+        );
     }
 }

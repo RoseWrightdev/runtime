@@ -11,6 +11,7 @@ use crate::core::executor::local_queue::LocalQueue;
 use crate::core::runtime::context::Context as RuntimeContext;
 use crate::core::scheduler::task::TaskRef;
 
+#[repr(align(128))]
 pub(crate) struct Worker {
     steal_global: fn() -> Option<TaskRef>,
     steal_local: fn(&mut LocalQueue) -> Option<TaskRef>,
@@ -48,12 +49,13 @@ impl Worker {
             stealer,
             unparker,
             tick: 0,
-            context: Context {
-                task_pool: crate::core::executor::task_pool::Pool::new(),
-                worker_index: Some(index),
-                stealers: None,
-                lifo_slot: None,
-                local_queue_ptr: None, // Will be set in run()
+            context: {
+                let mut ctx = Context::new();
+                ctx.task_pool = crate::core::executor::task_pool::Pool::new();
+                ctx.worker_index = Some(index);
+                ctx.stealers = None;
+                ctx.local_queue_ptr = None; // Will be set in run()
+                ctx
             },
         }
     }
@@ -180,6 +182,7 @@ impl Worker {
 
     fn park(&mut self) {}
 
+    #[cfg(test)]
     pub fn push_lifo(&mut self, task: TaskRef) {
         if let Some(old_task) = self.context.lifo_slot.replace(task) {
             self.queue.push(old_task);

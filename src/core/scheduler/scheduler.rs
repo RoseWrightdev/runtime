@@ -2,6 +2,8 @@ use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crossbeam::utils::CachePadded;
+
 use crate::core::executor::context::Context as ExecutorContext;
 
 use crate::core::scheduler::global_queue::GlobalQueue;
@@ -9,10 +11,11 @@ use crate::core::scheduler::join::JoinHandle;
 use crate::core::scheduler::task::Task;
 use crate::core::scheduler::worker_pool::Pool;
 
+#[repr(align(64))]
 pub(crate) struct Scheduler {
-    pub(crate) global_queue: GlobalQueue,
-    worker_pool: Pool,
-    shutdown: AtomicBool,
+    pub(crate) global_queue: CachePadded<GlobalQueue>,
+    worker_pool: CachePadded<Pool>,
+    shutdown: CachePadded<AtomicBool>,
 }
 
 impl Scheduler {
@@ -22,9 +25,9 @@ impl Scheduler {
 
     pub fn new_with_workers(num_workers: usize) -> Self {
         Scheduler {
-            global_queue: GlobalQueue::new(),
-            worker_pool: Pool::new(num_workers),
-            shutdown: AtomicBool::new(false),
+            global_queue: CachePadded::new(GlobalQueue::new()),
+            worker_pool: CachePadded::new(Pool::new(num_workers)),
+            shutdown: CachePadded::new(AtomicBool::new(false)),
         }
     }
 

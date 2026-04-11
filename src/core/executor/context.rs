@@ -8,8 +8,10 @@ use std::sync::Arc;
 use std::cell::Cell;
 use std::ptr;
 
+use crossbeam::utils::CachePadded;
+
 thread_local! {
-    static SLOW_CONTEXT: RefCell<Context> = RefCell::new(Context::new());
+    static SLOW_CONTEXT: RefCell<Box<Context>> = RefCell::new(Box::new(Context::new()));
     static FAST_CONTEXT: Cell<*mut Context> = Cell::new(ptr::null_mut());
 }
 
@@ -17,11 +19,10 @@ pub(crate) struct Context {
     pub(crate) task_pool: Pool,
     pub(crate) worker_index: Option<usize>,
     pub(crate) stealers: Option<Arc<dyn Any + Send + Sync>>,
-
-    // LIFO slot for the current worker
-    pub(crate) lifo_slot: Option<TaskRef>,
-    // Pointer to the local queue, safe because it's only accessed on the same thread
     pub(crate) local_queue_ptr: Option<*mut LocalQueue>,
+
+    // Isolated LIFO slot using standard CachePadded instead of manual padding
+    pub(crate) lifo_slot: CachePadded<Option<TaskRef>>,
 }
 
 unsafe impl Send for Context {}
@@ -32,7 +33,7 @@ impl Context {
             task_pool: Pool::new(),
             worker_index: None,
             stealers: None,
-            lifo_slot: None,
+            lifo_slot: CachePadded::new(None),
             local_queue_ptr: None,
         }
     }
@@ -63,7 +64,7 @@ impl Context {
         if !fast_ptr.is_null() {
             unsafe { f(&mut *fast_ptr) }
         } else {
-            SLOW_CONTEXT.with(|ctx| f(&mut ctx.borrow_mut()))
+            SLOW_CONTEXT.with(|ctx| f(&mut **ctx.borrow_mut()))
         }
     }
 }
