@@ -208,7 +208,13 @@ impl Worker {
 
     fn park(&mut self) {
         if let Some(parker) = self.parker.as_ref() {
-            parker.park();
+            if let Some(scheduler) = RuntimeContext::current() {
+                scheduler.incr_parked();
+                parker.park();
+                scheduler.decr_parked();
+            } else {
+                parker.park();
+            }
         }
     }
 

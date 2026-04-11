@@ -1,29 +1,40 @@
 use crate::core::scheduler::task::TaskRef;
 use crossbeam::deque::{Injector, Steal};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub(crate) struct GlobalQueue {
     queue: Injector<TaskRef>,
+    len: AtomicUsize,
 }
 
 impl GlobalQueue {
     pub fn new() -> Self {
         GlobalQueue {
             queue: Injector::new(),
+            len: AtomicUsize::new(0),
         }
     }
 
     pub fn push(&self, task: TaskRef) {
         self.queue.push(task);
+        self.len.fetch_add(1, Ordering::SeqCst);
     }
 
     pub fn steal(&self) -> Option<TaskRef> {
         loop {
             match self.queue.steal() {
-                Steal::Success(task) => return Some(task),
+                Steal::Success(task) => {
+                    self.len.fetch_sub(1, Ordering::SeqCst);
+                    return Some(task);
+                }
                 Steal::Retry => continue,
                 Steal::Empty => return None,
             }
         }
+    }
+
+    pub fn len(&self) -> usize {
+        self.len.load(Ordering::Acquire)
     }
 }
 

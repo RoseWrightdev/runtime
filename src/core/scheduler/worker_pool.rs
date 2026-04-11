@@ -108,12 +108,18 @@ impl Pool {
         }
     }
 
-    pub(crate) fn notify_one(&self) {
-        if self.unparkers.is_empty() {
+    pub(crate) fn notify_many(&self, count: usize) {
+        if self.unparkers.is_empty() || count == 0 {
             return;
         }
-        let index = self.next_unparker.fetch_add(1, Ordering::Relaxed) % self.unparkers.len();
-        self.unparkers[index].unpark();
+        
+        let len = self.unparkers.len();
+        let start = self.next_unparker.fetch_add(count, Ordering::Relaxed);
+        
+        for i in 0..count {
+            let index = (start + i) % len;
+            self.unparkers[index].unpark();
+        }
     }
 }
 

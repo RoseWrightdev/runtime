@@ -17,6 +17,7 @@ pub(crate) struct Scheduler {
     worker_pool: CachePadded<Pool>,
     shutdown: CachePadded<AtomicBool>,
     searching_workers: AtomicUsize,
+    parked_workers: AtomicUsize,
 }
 
 impl Scheduler {
@@ -31,6 +32,7 @@ impl Scheduler {
             worker_pool: CachePadded::new(Pool::new(num_workers)),
             shutdown: CachePadded::new(AtomicBool::new(false)),
             searching_workers: AtomicUsize::new(0),
+            parked_workers: AtomicUsize::new(0),
         }
     }
 
@@ -50,7 +52,7 @@ impl Scheduler {
         // Try to push to the local worker LIFO slot first
         if !ExecutorContext::try_push_local(task.clone()) {
             self.global_queue.push(task);
-            self.notify_one();
+            self.notify_adaptive();
         }
 
         join_handle
@@ -74,9 +76,15 @@ impl Scheduler {
         self.worker_pool.start(self.clone());
     }
 
-    pub fn notify_one(&self) {
-        if self.searching_workers.load(Ordering::Acquire) == 0 {
-            self.worker_pool.notify_one();
+    pub fn notify_adaptive(&self) {
+        let len = self.global_queue.len();
+        let searching = self.searching_workers.load(Ordering::Acquire);
+        
+        if len > searching {
+            let to_wake = (len - searching).min(self.parked_workers.load(Ordering::Acquire));
+            if to_wake > 0 {
+                self.worker_pool.notify_many(to_wake);
+            }
         }
     }
 
@@ -86,6 +94,14 @@ impl Scheduler {
 
     pub fn decr_searching(&self) {
         self.searching_workers.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    pub fn incr_parked(&self) {
+        self.parked_workers.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub fn decr_parked(&self) {
+        self.parked_workers.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
