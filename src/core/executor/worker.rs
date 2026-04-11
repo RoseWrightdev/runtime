@@ -13,7 +13,7 @@ use crate::core::scheduler::task::TaskRef;
 
 pub(crate) struct Worker {
     steal_global: fn() -> Option<TaskRef>,
-    steal_local: fn() -> Option<TaskRef>,
+    steal_local: fn(&mut LocalQueue) -> Option<TaskRef>,
     steal_reactor: fn() -> (),
 
     index: usize,
@@ -30,7 +30,7 @@ impl Worker {
     pub fn new(
         index: usize,
         steal_global: fn() -> Option<TaskRef>,
-        steal_local: fn() -> Option<TaskRef>,
+        steal_local: fn(&mut LocalQueue) -> Option<TaskRef>,
         steal_reactor: fn() -> (),
     ) -> Self {
         let queue = LocalQueue::new();
@@ -139,7 +139,7 @@ impl Worker {
         (self.steal_reactor)();
 
         // 5. steal from workers
-        if let Some(task) = (self.steal_local)() {
+        if let Some(task) = (self.steal_local)(&mut self.queue) {
             return Some(task);
         }
 
@@ -201,7 +201,7 @@ mod tests {
     #[test]
     fn test_worker_context_isolation() {
         let scheduler = Arc::new(Scheduler::new());
-        let mut worker = Worker::new(0, || None, || None, || {});
+        let mut worker = Worker::new(0, || None, |_| None, || {});
         let task = Task::spawn(async {}, scheduler);
 
         // This works directly without TLS because Worker owns its context

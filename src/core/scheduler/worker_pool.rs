@@ -1,6 +1,8 @@
-use crossbeam::deque::{Steal, Stealer};
+use crossbeam::deque::Stealer;
 use crossbeam::sync::Unparker;
 use std::sync::Arc;
+
+use crate::core::executor::local_queue::LocalQueue;
 
 use crate::core::executor::context::Context as ExecutorContext;
 use crate::core::executor::worker::Worker;
@@ -77,7 +79,7 @@ impl Pool {
         RuntimeContext::current().and_then(|rt| rt.steal_global())
     }
 
-    pub fn steal_local() -> Option<TaskRef> {
+    pub fn steal_local(dest: &mut LocalQueue) -> Option<TaskRef> {
         ExecutorContext::with(|ctx| {
             if let (Some(index), Some(any_stealers)) = (ctx.worker_index, &ctx.stealers) {
                 if let Some(stealers) = any_stealers.downcast_ref::<Arc<[Stealer<TaskRef>]>>() {
@@ -87,12 +89,8 @@ impl Pool {
                             continue;
                         }
 
-                        loop {
-                            match stealer.steal() {
-                                Steal::Success(task) => return Some(task),
-                                Steal::Retry => continue,
-                                Steal::Empty => break,
-                            }
+                        if let Some(task) = dest.steal_into(stealer) {
+                            return Some(task);
                         }
                     }
                 }

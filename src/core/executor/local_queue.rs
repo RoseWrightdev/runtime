@@ -1,5 +1,5 @@
 use crate::core::scheduler::task::TaskRef;
-use crossbeam::deque;
+use crossbeam::deque::{self, Stealer};
 
 pub(crate) struct LocalQueue {
     queue: deque::Worker<TaskRef>,
@@ -23,6 +23,16 @@ impl LocalQueue {
     pub fn get_stealer(&self) -> deque::Stealer<TaskRef> {
         self.queue.stealer()
     }
+
+    pub fn steal_into(&mut self, stealer: &Stealer<TaskRef>) -> Option<TaskRef> {
+        loop {
+            match stealer.steal_batch_and_pop(&self.queue) {
+                deque::Steal::Success(task) => return Some(task),
+                deque::Steal::Retry => continue,
+                deque::Steal::Empty => return None,
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -43,5 +53,47 @@ mod tests {
         // by the thread owning the crossbeam::Worker).
         // But we can verify it's empty.
         assert!(lq.pop().is_none());
+    }
+
+    #[test]
+    fn test_local_queue_batch_steal() {
+        let mut q_src = LocalQueue::new();
+        let mut q_dest = LocalQueue::new();
+        let scheduler = Arc::new(Scheduler::new());
+
+        // Push 10 tasks into the source queue
+        for _ in 0..10 {
+            q_src.push(Task::spawn(async {}, scheduler.clone()));
+        }
+
+        let stealer = q_src.get_stealer();
+
+        // This method doesn't exist yet - strict TDD Red phase
+        let stolen_task = q_dest.steal_into(&stealer);
+
+        assert!(
+            stolen_task.is_some(),
+            "Should have stolen at least one task for immediate execution"
+        );
+
+        // crossbeam's steal_batch_and_pop usually steals half
+        // Source had 10. Dest should now have stolen half (5).
+        // One is returned as stolen_task, so q_dest should have 4 remaining.
+        let mut dest_count = 0;
+        while q_dest.pop().is_some() {
+            dest_count += 1;
+        }
+
+        assert_eq!(
+            dest_count, 4,
+            "Should have 4 tasks left in dest queue (half size - 1)"
+        );
+
+        // Source should also have around 5 left
+        let mut src_count = 0;
+        while q_src.pop().is_some() {
+            src_count += 1;
+        }
+        assert_eq!(src_count, 5, "Source should have 5 tasks left (half size)");
     }
 }
