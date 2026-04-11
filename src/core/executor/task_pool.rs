@@ -118,4 +118,27 @@ mod tests {
         assert!(!ptr.is_null());
         pool.deallocate(ptr, layout);
     }
+
+    #[test]
+    fn test_zero_size_alloc() {
+        let mut pool = Pool::new();
+        let layout = Layout::new::<()>(); // Size 0
+        let ptr = pool.allocate(layout);
+        // Standard global allocator might return a non-null dangling pointer for size 0
+        pool.deallocate(ptr, layout);
+    }
+
+    #[test]
+    fn test_high_alignment_bypass() {
+        let mut pool = Pool::new();
+        // Pool only handles up to 16-byte alignment
+        let layout = Layout::from_size_align(32, 64).expect("Invalid layout");
+        
+        let ptr = pool.allocate(layout);
+        assert!(!ptr.is_null());
+        
+        // Verify it's not being stored in our buckets (manual check if possible, 
+        // but here we just ensure it doesn't crash and deallocates cleanly)
+        pool.deallocate(ptr, layout);
+    }
 }

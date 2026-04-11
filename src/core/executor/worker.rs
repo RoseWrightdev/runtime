@@ -1,5 +1,7 @@
 use std::sync::Arc;
 use std::task::Poll;
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use crate::core::runtime::context::Context as RuntimeContext;
 
 use crossbeam::deque::{self, Stealer};
 use crossbeam::sync::{Parker, Unparker};
@@ -60,6 +62,13 @@ impl Worker {
 
     pub fn run(&mut self) {
         loop {
+            // Check for shutdown signal from global scheduler
+            if let Some(scheduler) = RuntimeContext::current() {
+                if scheduler.is_shutdown() {
+                    break;
+                }
+            }
+
             if let Some(task) = self.steal() {
                 self.execute(task);
                 continue;
@@ -105,23 +114,24 @@ impl Worker {
     }
 
     fn execute(&mut self, task: Arc<Task>) {
-        // Context is a wrapper around the Waker.
-        // It's what gets passed into poll() so the future can
-        // register itself to be woken later.
         let waker = futures::task::waker_ref(&task);
         let mut cx = std::task::Context::from_waker(&waker);
 
-        // Execute the future using our new VTable dynamics entirely lock-free
         let future_ptr = task.future.get();
-        match unsafe { (*future_ptr).poll(&mut cx) } {
-            // Future completed.
-            Poll::Ready(_) => {}
+        
+        // Wrap execution in catch_unwind to ensure worker thread survivability
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            unsafe { (*future_ptr).poll(&mut cx) }
+        }));
 
-            // Future is waiting on something (I/O, timer).
-            // It has already registered its waker with whatever
-            // will wake it, so we just leave it alone until
-            // wake() re-queues it.
-            Poll::Pending => {}
+        match result {
+            Ok(Poll::Ready(_)) => {}
+            Ok(Poll::Pending) => {}
+            Err(_) => {
+                // Task panicked. 
+                // In a production runtime, we'd log this or propagate to a join handle.
+                eprintln!("Taiga: task panicked on worker {}", self.index);
+            }
         }
     }
 

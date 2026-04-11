@@ -23,6 +23,14 @@ impl Runtime {
         self.scheduler.spawn_internal(future);
     }
 
+    pub fn shutdown(&self) {
+        self.scheduler.shutdown();
+    }
+
+    pub fn is_shutdown(&self) -> bool {
+        self.scheduler.is_shutdown()
+    }
+
     pub fn block_on<F>(&self, future: F) -> F::Output
     where
         F: Future + Send + 'static,

@@ -1,5 +1,6 @@
 use std::future::Future;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::core::scheduler::global_queue::GlobalQueue;
 use crate::core::scheduler::worker_pool::Pool;
@@ -8,7 +9,7 @@ use crate::core::scheduler::task::Task;
 pub(crate) struct Scheduler {
     pub(crate) global_queue: GlobalQueue,
     worker_pool: Pool,
-    shutdown: bool,
+    shutdown: AtomicBool,
 }
 
 impl Scheduler {
@@ -18,7 +19,7 @@ impl Scheduler {
         Scheduler {
             global_queue: GlobalQueue::new(),
             worker_pool: Pool::new(num_workers),
-            shutdown: false,
+            shutdown: AtomicBool::new(false),
         }
     }
 
@@ -27,13 +28,23 @@ impl Scheduler {
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
-        if !self.shutdown {
+        if !self.shutdown.load(Ordering::Acquire) {
             let scheduler = self.clone();
             let task = Task::new(async move {
                 let _ = future.await;
             }, scheduler);
             self.global_queue.push(task);
         }
+    }
+
+    pub fn shutdown(&self) {
+        self.shutdown.store(true, Ordering::Release);
+        // Wake up all workers to see the shutdown signal
+        self.worker_pool.unpark_all();
+    }
+
+    pub fn is_shutdown(&self) -> bool {
+        self.shutdown.load(Ordering::Acquire)
     }
 
     pub fn steal_global(&self) -> Option<Arc<Task>> {

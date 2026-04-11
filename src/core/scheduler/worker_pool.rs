@@ -99,6 +99,12 @@ impl Pool {
             None
         })
     }
+
+    pub(crate) fn unpark_all(&self) {
+        for unparker in &self.unparkers {
+            unparker.unpark();
+        }
+    }
 }
 
 #[cfg(test)]

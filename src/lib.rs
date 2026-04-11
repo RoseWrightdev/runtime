@@ -71,4 +71,67 @@ mod tests {
         let expected: Vec<i32> = (0..10).collect();
         assert_eq!(results, expected);
     }
+
+    #[test]
+    fn test_panic_survivability() {
+        let (tx, rx) = mpsc::channel();
+        
+        block_on(async move {
+            spawn(async {
+                panic!("intentional panic");
+            });
+            
+            spawn(async move {
+                tx.send(Ok::<_, ()>(())).unwrap();
+            });
+        });
+
+        assert!(rx.recv().is_ok());
+    }
+
+    #[test]
+    fn test_deep_recursion_nesting() {
+        fn recursive_spawn(n: usize, tx: mpsc::Sender<()>) {
+            if n == 0 {
+                tx.send(()).unwrap();
+                return;
+            }
+            spawn(async move {
+                recursive_spawn(n - 1, tx);
+            });
+        }
+
+        let (tx, rx) = mpsc::channel();
+        block_on(async move {
+            recursive_spawn(100, tx);
+        });
+
+        assert!(rx.recv().is_ok());
+    }
+
+    #[test]
+    fn test_stress_concurrency_heavy() {
+        let (tx, rx) = mpsc::channel();
+        let num_tasks = 10_000;
+        
+        block_on(async move {
+            for _ in 0..num_tasks {
+                let tx = tx.clone();
+                spawn(async move {
+                    tx.send(1).unwrap();
+                });
+            }
+        });
+
+        let count: i32 = rx.iter().take(num_tasks).sum();
+        assert_eq!(count, num_tasks as i32);
+    }
+
+    #[test]
+    fn test_shutdown_signaling() {
+        let rt = Runtime::new();
+        assert!(!rt.is_shutdown());
+        rt.shutdown();
+        assert!(rt.is_shutdown());
+    }
 }
