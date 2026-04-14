@@ -13,6 +13,18 @@ pub struct IoSourceState {
     pub write_ready: bool,
 }
 
+impl IoSourceState {
+    fn set_read_ready(&mut self) -> Option<Waker> {
+        self.read_ready = true;
+        self.read_waker.take()
+    }
+
+    fn set_write_ready(&mut self) -> Option<Waker> {
+        self.write_ready = true;
+        self.write_waker.take()
+    }
+}
+
 pub struct Reactor {
     poll: Mutex<Poll>,
     events: Mutex<Events>,
@@ -58,22 +70,17 @@ impl Reactor {
         poll.poll(&mut events, timeout)?;
         let n = events.iter().count();
 
-        if !events.is_empty() {
-            let mut wakers = self.wakers.lock();
-            for event in events.iter() {
-                let token = event.token();
-                if let Some(state) = wakers.get_mut(token.0) {
-                    if event.is_readable() {
-                        state.read_ready = true;
-                        if let Some(waker) = state.read_waker.take() {
-                            waker.wake();
-                        }
+        let mut wakers = self.wakers.lock();
+        for event in events.iter() {
+            if let Some(state) = wakers.get_mut(event.token().0) {
+                if event.is_readable() {
+                    if let Some(waker) = state.set_read_ready() {
+                        waker.wake();
                     }
-                    if event.is_writable() {
-                        state.write_ready = true;
-                        if let Some(waker) = state.write_waker.take() {
-                            waker.wake();
-                        }
+                }
+                if event.is_writable() {
+                    if let Some(waker) = state.set_write_ready() {
+                        waker.wake();
                     }
                 }
             }
@@ -106,19 +113,23 @@ impl Reactor {
     /// If the token is already ready for that interest, the waker is triggered immediately.
     pub fn add_waker(&self, token: Token, interest: Interest, waker: Waker) {
         let mut wakers = self.wakers.lock();
-        if let Some(state) = wakers.get_mut(token.0) {
-            if interest.is_readable() {
-                if state.read_ready {
-                    waker.wake();
-                } else {
-                    state.read_waker = Some(waker);
-                }
-            } else if interest.is_writable() {
-                if state.write_ready {
-                    waker.wake();
-                } else {
-                    state.write_waker = Some(waker);
-                }
+        let Some(state) = wakers.get_mut(token.0) else {
+            return;
+        };
+
+        if interest.is_readable() {
+            if state.read_ready {
+                waker.wake_by_ref();
+            } else {
+                state.read_waker = Some(waker.clone());
+            }
+        }
+        
+        if interest.is_writable() {
+            if state.write_ready {
+                waker.wake();
+            } else {
+                state.write_waker = Some(waker);
             }
         }
     }
@@ -130,7 +141,8 @@ impl Reactor {
         if let Some(state) = wakers.get_mut(token.0) {
             if interest.is_readable() {
                 state.read_ready = false;
-            } else if interest.is_writable() {
+            }
+            if interest.is_writable() {
                 state.write_ready = false;
             }
         }
