@@ -1,6 +1,8 @@
 use crate::core::executor::local_queue::LocalQueue;
 use crate::core::executor::task_pool::Pool;
+use crate::core::scheduler::scheduler::Scheduler;
 use crate::core::scheduler::task::TaskRef;
+
 use std::any::Any;
 use std::cell::RefCell;
 use std::sync::Arc;
@@ -9,8 +11,6 @@ use std::cell::Cell;
 use std::ptr;
 
 use crossbeam::utils::CachePadded;
-use crate::core::runtime::context::Context as RuntimeContext;
-
 thread_local! {
     static SLOW_CONTEXT: RefCell<Box<Context>> = RefCell::new(Box::new(Context::new()));
     static FAST_CONTEXT: Cell<*mut Context> = Cell::new(ptr::null_mut());
@@ -39,7 +39,7 @@ impl Context {
         }
     }
 
-    pub(crate) fn try_push_local(task: TaskRef) -> bool {
+    pub(crate) fn try_push_local(task: TaskRef, scheduler: &Scheduler) -> bool {
         Self::with(|ctx| {
             if let Some(queue_ptr) = ctx.local_queue_ptr {
                 // If LIFO slot is full, move the OLD task to the local queue
@@ -48,9 +48,7 @@ impl Context {
                     unsafe {
                         (*queue_ptr).push(old_task);
                         // Notify that a task is available for stealing
-                        if let Some(rt) = RuntimeContext::current() {
-                            rt.notify_local();
-                        }
+                        scheduler.notify_local();
                     }
                 }
                 true

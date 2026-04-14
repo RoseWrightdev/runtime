@@ -224,8 +224,8 @@ impl Task {
     }
 
     fn wake_internal(this: TaskRef) {
-        if !Context::try_push_local(this.clone()) {
-            let scheduler = unsafe { this.ptr.as_ref().scheduler.clone() };
+        let scheduler = unsafe { this.ptr.as_ref().scheduler.clone() };
+        if !Context::try_push_local(this.clone(), &scheduler) {
             scheduler.global_queue.push(this);
             scheduler.notify_adaptive();
         }

@@ -20,6 +20,7 @@ pub(crate) struct Scheduler {
     pub(crate) searching_workers: AtomicUsize,
     parked_workers: AtomicUsize,
     pub(crate) reactor: Arc<Reactor>,
+    pub(crate) notifying: AtomicBool,
 }
 
 impl Scheduler {
@@ -36,6 +37,7 @@ impl Scheduler {
             searching_workers: AtomicUsize::new(0),
             parked_workers: AtomicUsize::new(0),
             reactor: Arc::new(Reactor::new().expect("Failed to create Reactor")),
+            notifying: AtomicBool::new(false),
         }
     }
 
@@ -53,7 +55,7 @@ impl Scheduler {
         let join_handle = JoinHandle::new(task.clone());
 
         // Try to push to the local worker LIFO slot first
-        if !ExecutorContext::try_push_local(task.clone()) {
+        if !ExecutorContext::try_push_local(task.clone(), self) {
             self.global_queue.push(task);
             self.notify_adaptive();
         }
@@ -97,8 +99,10 @@ impl Scheduler {
 
         if searching == 0 {
             // Only wake the reactor if no one is searching. 
-            // This is the most expensive syscall (mio::Waker::wake).
-            self.reactor.wakeup();
+            // We use the 'notifying' flag to coalesce redundant wakeups.
+            if !self.notifying.swap(true, Ordering::SeqCst) {
+                self.reactor.wakeup();
+            }
         } else {
             // Load-based unparking: if the global queue has significantly more tasks
             // than active searchers, wake more workers to assist.
@@ -115,10 +119,10 @@ impl Scheduler {
         // Light notification for local queue pushes. 
         // If everyone else is parked, they won't steal from this local queue.
         if self.searching_workers.load(Ordering::Acquire) == 0 {
-            self.worker_pool.notify_many(1);
-            // We also wake the reactor just in case the only worker awake is
-            // the Guardian blocked in poll, who needs to know to check global/stealing.
-            self.reactor.wakeup();
+            if !self.notifying.swap(true, Ordering::SeqCst) {
+                self.worker_pool.notify_many(1);
+                self.reactor.wakeup();
+            }
         }
     }
 

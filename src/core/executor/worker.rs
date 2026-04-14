@@ -193,6 +193,7 @@ impl Worker {
 
     fn search_and_park(&mut self, scheduler: &crate::core::scheduler::scheduler::Scheduler) -> Option<TaskRef> {
         scheduler.incr_searching();
+        scheduler.notifying.store(false, Ordering::Release);
 
         loop {
             if let Some(task) = self.steal() {
@@ -206,9 +207,9 @@ impl Worker {
                     // Guardian role: block on the reactor to keep I/O alive.
                     let _ = (self.steal_reactor)(Some(std::time::Duration::from_millis(100)));
                     
-                    // IMPORTANT: After waking from reactor sleep, we MUST re-increment 
                     // and check for work before deciding whether to park or loop.
                     scheduler.incr_searching();
+                    scheduler.notifying.store(false, Ordering::Release);
                     continue;
                 }
             }
