@@ -50,4 +50,15 @@ impl Runtime {
         });
         rx.recv().expect("Runtime internal channel closed")
     }
+
+    pub fn join(&self) {
+        self.scheduler.join();
+    }
+}
+
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        self.shutdown();
+        self.join();
+    }
 }

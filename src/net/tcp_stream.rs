@@ -130,7 +130,7 @@ mod tests {
             let listener = AsyncTcpListener::bind(addr).unwrap();
             let addr = listener.local_addr().unwrap();
 
-            crate::spawn(async move {
+            let server_handle = crate::spawn(async move {
                 let (stream, _): (AsyncTcpStream, SocketAddr) = listener.accept().await.unwrap();
                 let mut buf = [0u8; 11];
                 let mut read_bytes = 0;
@@ -175,6 +175,7 @@ mod tests {
                 }
             }
             assert_eq!(&read_buf, b"hello back");
+            server_handle.await.unwrap();
         }, std::time::Duration::from_secs(5));
 
         rx.recv().unwrap();

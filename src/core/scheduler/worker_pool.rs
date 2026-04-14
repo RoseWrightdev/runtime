@@ -14,6 +14,7 @@ pub(crate) struct Pool {
     workers: std::sync::Mutex<Vec<Worker>>,
     stealers: Arc<[Stealer<TaskRef>]>,
     unparkers: Vec<Unparker>,
+    threads: std::sync::Mutex<Vec<std::thread::JoinHandle<()>>>,
     next_unparker: AtomicUsize,
 }
 
@@ -40,6 +41,7 @@ impl Pool {
             workers: std::sync::Mutex::new(workers),
             stealers: Arc::from(stealers),
             unparkers,
+            threads: std::sync::Mutex::new(Vec::with_capacity(num_workers)),
             next_unparker: AtomicUsize::new(0),
         }
     }
@@ -51,12 +53,13 @@ impl Pool {
         };
         let stealers = self.stealers.clone();
 
+        let mut handles = Vec::new();
         for mut worker in workers {
             let scheduler = scheduler.clone();
             let stealers = stealers.clone();
             let index = worker.get_index();
 
-            std::thread::spawn(move || {
+            let handle = std::thread::spawn(move || {
                 // Initialize Runtime context
                 let _rt_guard = RuntimeContext::enter(scheduler);
 
@@ -71,6 +74,23 @@ impl Pool {
                 // Start execution loop
                 worker.run();
             });
+            handles.push(handle);
+        }
+        
+        {
+            let mut lock = self.threads.lock().unwrap();
+            *lock = handles;
+        }
+    }
+
+    pub(crate) fn join(&self) {
+        let threads = {
+            let mut lock = self.threads.lock().unwrap();
+            std::mem::take(&mut *lock)
+        };
+        
+        for handle in threads {
+            let _ = handle.join();
         }
     }
 

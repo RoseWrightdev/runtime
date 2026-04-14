@@ -101,16 +101,21 @@ mod tests {
             let num_clients = 5;
             let (tx, _rx) = std::sync::mpsc::channel();
             
+            let mut client_handles = Vec::new();
             for i in 0..num_clients {
                 let tx = tx.clone();
-                crate::spawn(async move {
+                client_handles.push(crate::spawn(async move {
                     let _stream = AsyncTcpStream::connect(actual_addr).await.expect("Client connect failed");
                     tx.send(i).unwrap();
-                });
+                }));
             }
             
             for _ in 0..num_clients {
                 let _ = listener.accept().await.expect("Accept failed");
+            }
+            
+            for h in client_handles {
+                h.await.unwrap();
             }
         }, std::time::Duration::from_secs(10));
     }

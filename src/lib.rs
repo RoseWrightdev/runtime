@@ -32,6 +32,7 @@ where
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex, mpsc};
+    use std::net::SocketAddr;
 
     #[test]
     fn test_block_on_basic() {
@@ -44,9 +45,10 @@ mod tests {
         let (tx, rx) = mpsc::channel();
 
         block_on(async move {
-            spawn(async move {
+            let h = spawn(async move {
                 tx.send(100).unwrap();
             });
+            h.await.unwrap();
         });
 
         assert_eq!(rx.recv().unwrap(), 100);
@@ -57,11 +59,15 @@ mod tests {
         let (tx, rx) = mpsc::channel();
 
         block_on(async move {
+            let mut handles = Vec::new();
             for i in 0..10 {
                 let tx = tx.clone();
-                spawn(async move {
+                handles.push(spawn(async move {
                     tx.send(i).unwrap();
-                });
+                }));
+            }
+            for h in handles {
+                h.await.unwrap();
             }
         });
 
@@ -76,13 +82,16 @@ mod tests {
         let (tx, rx) = mpsc::channel();
 
         block_on(async move {
-            spawn(async {
+            let h1 = spawn(async {
                 panic!("intentional panic");
             });
 
-            spawn(async move {
+            let h2 = spawn(async move {
                 tx.send(Ok::<_, ()>(())).unwrap();
             });
+            
+            let _ = h1.await;
+            let _ = h2.await;
         });
 
         assert!(rx.recv().is_ok());
@@ -90,19 +99,19 @@ mod tests {
 
     #[test]
     fn test_deep_recursion_nesting() {
-        fn recursive_spawn(n: usize, tx: mpsc::Sender<()>) {
+        fn recursive_spawn(n: usize, tx: mpsc::Sender<()>) -> JoinHandle<()> {
             if n == 0 {
                 tx.send(()).unwrap();
-                return;
+                return spawn(async {});
             }
             spawn(async move {
-                recursive_spawn(n - 1, tx);
-            });
+                recursive_spawn(n - 1, tx).await.unwrap();
+            })
         }
 
         let (tx, rx) = mpsc::channel();
         block_on(async move {
-            recursive_spawn(100, tx);
+            recursive_spawn(100, tx).await.unwrap();
         });
 
         assert!(rx.recv().is_ok());
@@ -114,11 +123,15 @@ mod tests {
         let num_tasks = 10_000;
 
         block_on(async move {
+            let mut handles = Vec::new();
             for _ in 0..num_tasks {
                 let tx = tx.clone();
-                spawn(async move {
+                handles.push(spawn(async move {
                     tx.send(1).unwrap();
-                });
+                }));
+            }
+            for h in handles {
+                h.await.unwrap();
             }
         });
 
@@ -140,7 +153,8 @@ mod tests {
 
         let order_clone = execution_order.clone();
         // Use only 1 worker to ensure deterministic LIFO order without interference from stealing
-        Runtime::with_workers(1).block_on(async move {
+        let rt = Runtime::with_workers(1);
+        rt.block_on(async move {
             let order = order_clone.clone();
 
             // Spawn Task C (should go to LIFO slot)
@@ -161,8 +175,7 @@ mod tests {
         });
 
         // Wait for workers to finish B and C (they were queued during A)
-        // Since we have a single worker and we know the order, we can just wait
-        // for the vector to reach size 3.
+        // We use a real timeout here via block_on_timeout or just a loop with a fixed wait.
         let mut attempts = 0;
         loop {
             {
@@ -171,9 +184,9 @@ mod tests {
                     break;
                 }
             }
-            std::thread::yield_now();
+            std::thread::sleep(std::time::Duration::from_millis(10));
             attempts += 1;
-            if attempts > 1000 {
+            if attempts > 100 { // 1 second total
                 panic!("Tasks B and C failed to execute in time");
             }
         }
@@ -221,11 +234,12 @@ mod tests {
             let addr = listener.local_addr().unwrap();
 
             // Server task
-            spawn(async move {
+            let server_handle = spawn(async move {
+                let mut worker_handles = Vec::new();
                 for _ in 0..num_clients {
                     let (async_stream, _) = listener.accept().await.unwrap();
                     
-                    spawn(async move {
+                    worker_handles.push(spawn(async move {
                         let mut buf = [0u8; 1024];
                         loop {
                             let n = std::future::poll_fn(|cx| async_stream.poll_read(cx, &mut buf)).await.unwrap();
@@ -237,14 +251,17 @@ mod tests {
                                 written += w;
                             }
                         }
-                    });
+                    }));
+                }
+                for h in worker_handles {
+                    h.await.unwrap();
                 }
             });
 
             // Client tasks
-            let mut handles = Vec::new();
+            let mut client_handles = Vec::new();
             for _ in 0..num_clients {
-                handles.push(spawn(async move {
+                client_handles.push(spawn(async move {
                     let client = AsyncTcpStream::connect(addr).await.unwrap();
                     
                     // Send
@@ -266,9 +283,10 @@ mod tests {
                 }));
             }
 
-            for h in handles {
+            for h in client_handles {
                 h.await.unwrap();
             }
+            server_handle.await.unwrap();
         }, std::time::Duration::from_secs(5));
     }
 

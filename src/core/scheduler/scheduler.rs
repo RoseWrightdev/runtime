@@ -67,6 +67,10 @@ impl Scheduler {
         self.worker_pool.unpark_all();
     }
 
+    pub fn join(&self) {
+        self.worker_pool.join();
+    }
+
     pub fn is_shutdown(&self) -> bool {
         self.shutdown.load(Ordering::Acquire)
     }
