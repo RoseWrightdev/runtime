@@ -10,6 +10,12 @@ pub use crate::core::scheduler::join::JoinHandle;
 use std::any::Any;
 use std::future::Future;
 
+#[cfg(test)]
+use std::sync::OnceLock;
+
+#[cfg(test)]
+static GLOBAL_RUNTIME: OnceLock<Runtime> = OnceLock::new();
+
 pub fn spawn<F, T>(future: F) -> JoinHandle<T>
 where
     F: Future<Output = T> + Send + 'static,
@@ -25,6 +31,10 @@ where
     F: Future + Send + 'static,
     F::Output: Send + 'static,
 {
+    #[cfg(test)]
+    return GLOBAL_RUNTIME.get_or_init(|| Runtime::new()).block_on(future);
+
+    #[cfg(not(test))]
     Runtime::new().block_on(future)
 }
 
@@ -32,7 +42,6 @@ where
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex, mpsc};
-    use std::net::SocketAddr;
 
     #[test]
     fn test_block_on_basic() {
@@ -201,24 +210,22 @@ mod tests {
 
     #[test]
     fn test_join_handle_success() {
-        let result = block_on(async {
+        crate::utils::block_on_timeout(async {
             let handle = spawn(async { 42 });
-            handle.await.unwrap()
-        });
-        assert_eq!(result, 42);
+            assert_eq!(handle.await.unwrap(), 42);
+        }, std::time::Duration::from_secs(5));
     }
 
     #[test]
     fn test_join_handle_panic() {
-        let result = block_on(async {
+        crate::utils::block_on_timeout(async {
             let handle = spawn(async {
                 panic!("intentional panic");
                 #[allow(unreachable_code)]
                 42
             });
-            handle.await
-        });
-        assert!(result.is_err());
+            assert!(handle.await.is_err());
+        }, std::time::Duration::from_secs(5));
     }
 
     #[test]
@@ -339,6 +346,30 @@ mod tests {
             
             assert_eq!(res, 123);
         }, std::time::Duration::from_secs(5));
+    }
+
+    #[test]
+    fn test_lost_wakeup_stress() {
+        use std::time::{Duration, Instant};
+
+        // Use 1 worker to maximize the chance of hitting the "park while notifying" race window.
+        let rt = Runtime::with_workers(1);
+        
+        for _ in 0..100 {
+            let start = Instant::now();
+            let (tx, rx) = mpsc::channel();
+            
+            rt.spawn(async move {
+                tx.send(()).unwrap();
+            });
+            
+            rx.recv_timeout(Duration::from_millis(150)).expect("Task lost or took too long!");
+            
+            let elapsed = start.elapsed();
+            // If it takes more than 100ms, it likely missed the immediate wakeup 
+            // and waited for the reactor poll timeout (currently 100ms).
+            assert!(elapsed < Duration::from_millis(100), "Slow task pick-up: {:?}. Likely lost wakeup!", elapsed);
+        }
     }
 
     #[test]

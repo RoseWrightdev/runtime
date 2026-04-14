@@ -63,8 +63,11 @@ impl Scheduler {
 
     pub fn shutdown(&self) {
         self.shutdown.store(true, Ordering::Release);
-        // Wake up all workers to see the shutdown signal
+        // Wake up all workers to see the shutdown signal.
+        // unpark_all() wakes workers parked in std::thread::park().
         self.worker_pool.unpark_all();
+        // wakeup() pulls the "Guardian" worker out of mio::poll().
+        self.reactor.wakeup();
     }
 
     pub fn join(&self) {
@@ -93,13 +96,19 @@ impl Scheduler {
     }
 
     pub fn notify_adaptive(&self) {
-        let len = self.global_queue.len();
         let searching = self.searching_workers.load(Ordering::Acquire);
-        
-        if len > searching * 2 {
-             self.notify();
+
+        // If searching workers are low, we must unpark one.
+        // We also always wake the reactor to pull the Guardian out of poll().
+        if searching == 0 {
+            self.notify();
         } else {
-             self.reactor.wakeup();
+            // Even with searchers, we unpark an extra one occasionally under load
+            // to mitigate "park-at-the-same-moment" races.
+            if self.global_queue.len() > searching {
+                self.worker_pool.notify_many(1);
+            }
+            self.reactor.wakeup();
         }
     }
 
@@ -142,14 +151,14 @@ mod tests {
     #[test]
     fn test_adaptive_notification() {
         let scheduler = Scheduler::new_with_workers(4);
-        
+
         // Initially 0
         assert_eq!(scheduler.searching_workers.load(Ordering::Relaxed), 0);
         assert_eq!(scheduler.parked_workers.load(Ordering::Relaxed), 0);
 
         scheduler.incr_searching();
         assert_eq!(scheduler.searching_workers.load(Ordering::Relaxed), 1);
-        
+
         scheduler.incr_parked();
         assert_eq!(scheduler.parked_workers.load(Ordering::Relaxed), 1);
 
@@ -166,7 +175,7 @@ mod tests {
         let scheduler = Arc::new(Scheduler::new());
         scheduler.shutdown();
         assert!(scheduler.is_shutdown());
-        
+
         // Should panic
         scheduler.spawn_internal(async { 1 + 1 });
     }

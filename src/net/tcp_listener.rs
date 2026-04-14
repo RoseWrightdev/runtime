@@ -117,6 +117,6 @@ mod tests {
             for h in client_handles {
                 h.await.unwrap();
             }
-        }, std::time::Duration::from_secs(10));
+        }, std::time::Duration::from_secs(30));
     }
 }

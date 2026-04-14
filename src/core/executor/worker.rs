@@ -204,17 +204,22 @@ impl Worker {
             if scheduler.searching_workers.fetch_sub(1, Ordering::SeqCst) == 1 {
                 if scheduler.reactor.has_wakers() {
                     // Guardian role: block on the reactor to keep I/O alive.
-                    // Scheduler will wake us via reactor.wakeup() if new work arrives.
-                    let _ = (self.steal_reactor)(Some(std::time::Duration::from_millis(500)));
+                    let _ = (self.steal_reactor)(Some(std::time::Duration::from_millis(100)));
                     
-                    // Re-increment and try again.
+                    // IMPORTANT: After waking from reactor sleep, we MUST re-increment 
+                    // and check for work before deciding whether to park or loop.
                     scheduler.incr_searching();
                     continue;
                 }
             }
             
-            // Either we weren't the last searcher, or there was no I/O pending.
-            // In both cases, it's safe to park.
+            // Last chance: check global queue after we're technically no longer "searching"
+            // but before we actually park.
+            if let Some(task) = scheduler.steal_global() {
+                scheduler.incr_searching();
+                return Some(task);
+            }
+
             break;
         }
 
