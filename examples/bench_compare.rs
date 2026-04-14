@@ -1,5 +1,4 @@
 use taiga::core::runtime::runtime::Runtime as TaigaRuntime;
-use tokio::runtime::Runtime as TokioRuntime;
 use futures::future::{BoxFuture, FutureExt};
 use std::time::Instant;
 

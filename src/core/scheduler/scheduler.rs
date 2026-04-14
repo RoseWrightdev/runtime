@@ -17,7 +17,7 @@ pub(crate) struct Scheduler {
     pub(crate) global_queue: CachePadded<GlobalQueue>,
     worker_pool: CachePadded<Pool>,
     shutdown: CachePadded<AtomicBool>,
-    searching_workers: AtomicUsize,
+    pub(crate) searching_workers: AtomicUsize,
     parked_workers: AtomicUsize,
     pub(crate) reactor: Arc<Reactor>,
 }
@@ -79,15 +79,23 @@ impl Scheduler {
         self.worker_pool.start(self.clone());
     }
 
+    pub(crate) fn notify(&self) {
+        if self.searching_workers.load(Ordering::Acquire) == 0 {
+            self.worker_pool.notify_many(1);
+        }
+        // Always wake the reactor to be safe, especially if the last searching
+        // worker is currently blocked in mio::poll().
+        self.reactor.wakeup();
+    }
+
     pub fn notify_adaptive(&self) {
         let len = self.global_queue.len();
         let searching = self.searching_workers.load(Ordering::Acquire);
-
-        if len > searching {
-            let to_wake = (len - searching).min(self.parked_workers.load(Ordering::Acquire));
-            if to_wake > 0 {
-                self.worker_pool.notify_many(to_wake);
-            }
+        
+        if len > searching * 2 {
+             self.notify();
+        } else {
+             self.reactor.wakeup();
         }
     }
 
@@ -125,5 +133,37 @@ mod tests {
         // Should be in global queue
         assert!(scheduler.steal_global().is_some());
         assert!(scheduler.steal_global().is_none());
+    }
+
+    #[test]
+    fn test_adaptive_notification() {
+        let scheduler = Scheduler::new_with_workers(4);
+        
+        // Initially 0
+        assert_eq!(scheduler.searching_workers.load(Ordering::Relaxed), 0);
+        assert_eq!(scheduler.parked_workers.load(Ordering::Relaxed), 0);
+
+        scheduler.incr_searching();
+        assert_eq!(scheduler.searching_workers.load(Ordering::Relaxed), 1);
+        
+        scheduler.incr_parked();
+        assert_eq!(scheduler.parked_workers.load(Ordering::Relaxed), 1);
+
+        scheduler.decr_searching();
+        assert_eq!(scheduler.searching_workers.load(Ordering::Relaxed), 0);
+
+        scheduler.decr_parked();
+        assert_eq!(scheduler.parked_workers.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Spawned on shutdown scheduler")]
+    fn test_scheduler_shutdown_panic() {
+        let scheduler = Arc::new(Scheduler::new());
+        scheduler.shutdown();
+        assert!(scheduler.is_shutdown());
+        
+        // Should panic
+        scheduler.spawn_internal(async { 1 + 1 });
     }
 }

@@ -15,7 +15,7 @@ use crate::core::scheduler::task::TaskRef;
 pub(crate) struct Worker {
     steal_global: fn() -> Option<TaskRef>,
     steal_local: fn(&mut LocalQueue) -> Option<TaskRef>,
-    steal_reactor: fn() -> (),
+    steal_reactor: fn(Option<std::time::Duration>) -> usize,
 
     index: usize,
     queue: LocalQueue,
@@ -33,7 +33,7 @@ impl Worker {
         index: usize,
         steal_global: fn() -> Option<TaskRef>,
         steal_local: fn(&mut LocalQueue) -> Option<TaskRef>,
-        steal_reactor: fn() -> (),
+        steal_reactor: fn(Option<std::time::Duration>) -> usize,
     ) -> Self {
         let queue = LocalQueue::new();
         let stealer = queue.get_stealer();
@@ -148,8 +148,8 @@ impl Worker {
             }
         }
 
-        // 4. drive reactor
-        (self.steal_reactor)();
+        // 4. drive reactor (non-blocking)
+        let _ = (self.steal_reactor)(Some(std::time::Duration::ZERO));
 
         // 5. steal from workers
         if let Some(task) = (self.steal_local)(&mut self.queue) {
@@ -194,15 +194,32 @@ impl Worker {
     fn search_and_park(&mut self, scheduler: &crate::core::scheduler::scheduler::Scheduler) -> Option<TaskRef> {
         scheduler.incr_searching();
 
-        // Last ditch effort: steal again while marked as searching
-        if let Some(task) = self.steal() {
-            scheduler.decr_searching();
-            return Some(task);
+        loop {
+            if let Some(task) = self.steal() {
+                scheduler.decr_searching();
+                return Some(task);
+            }
+
+            // Atomic handoff: try to decrement. If we were the last searcher, we check I/O.
+            if scheduler.searching_workers.fetch_sub(1, Ordering::SeqCst) == 1 {
+                if scheduler.reactor.has_wakers() {
+                    // Guardian role: block on the reactor to keep I/O alive.
+                    // Scheduler will wake us via reactor.wakeup() if new work arrives.
+                    let _ = (self.steal_reactor)(Some(std::time::Duration::from_millis(500)));
+                    
+                    // Re-increment and try again.
+                    scheduler.incr_searching();
+                    continue;
+                }
+            }
+            
+            // Either we weren't the last searcher, or there was no I/O pending.
+            // In both cases, it's safe to park.
+            break;
         }
 
-        // Still nothing, actually park the thread
         self.park();
-        scheduler.decr_searching();
+        // Note: we don't decr_searching here because it was already decremented by fetch_sub.
         None
     }
 
@@ -240,7 +257,7 @@ mod tests {
     #[test]
     fn test_worker_context_isolation() {
         let scheduler = Arc::new(Scheduler::new());
-        let mut worker = Worker::new(0, || None, |_| None, || {});
+        let mut worker = Worker::new(0, || None, |_| None, |_| 0);
         let task = Task::spawn(async {}, scheduler);
 
         // This works directly without TLS because Worker owns its context
@@ -256,7 +273,7 @@ mod tests {
         use std::time::Duration;
         
         let scheduler = Arc::new(Scheduler::new());
-        let mut worker = Worker::new(0, || None, |_| None, || {});
+        let mut worker = Worker::new(0, || None, |_| None, |_| 0);
         
         let unparker = worker.get_unparker();
         let scheduler_clone = scheduler.clone();

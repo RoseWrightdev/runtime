@@ -98,9 +98,11 @@ impl Pool {
         })
     }
 
-    pub fn drive_reactor() {
+    pub fn drive_reactor(timeout: Option<std::time::Duration>) -> usize {
         if let Some(scheduler) = RuntimeContext::current() {
-            let _ = scheduler.reactor.drive();
+            scheduler.reactor.drive(timeout).unwrap_or(0)
+        } else {
+            0
         }
     }
 

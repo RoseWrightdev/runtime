@@ -1,6 +1,7 @@
 pub mod core;
 pub mod net;
 pub mod time;
+pub mod utils;
 
 use crate::core::runtime::context::Context as RuntimeContext;
 pub use crate::core::runtime::runtime::Runtime;
@@ -205,5 +206,105 @@ mod tests {
             handle.await
         });
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_tcp_echo_server() {
+        use crate::net::{AsyncTcpStream, AsyncTcpListener};
+
+        let addr = "127.0.0.1:0".parse().unwrap();
+        let num_clients = 10;
+        let message = b"echo this";
+
+        crate::utils::block_on_timeout(async move {
+            let listener = AsyncTcpListener::bind(addr).unwrap();
+            let addr = listener.local_addr().unwrap();
+
+            // Server task
+            spawn(async move {
+                for _ in 0..num_clients {
+                    let (async_stream, _) = listener.accept().await.unwrap();
+                    
+                    spawn(async move {
+                        let mut buf = [0u8; 1024];
+                        loop {
+                            let n = std::future::poll_fn(|cx| async_stream.poll_read(cx, &mut buf)).await.unwrap();
+                            if n == 0 { break; }
+                            
+                            let mut written = 0;
+                            while written < n {
+                                let w = std::future::poll_fn(|cx| async_stream.poll_write(cx, &buf[written..n])).await.unwrap();
+                                written += w;
+                            }
+                        }
+                    });
+                }
+            });
+
+            // Client tasks
+            let mut handles = Vec::new();
+            for _ in 0..num_clients {
+                handles.push(spawn(async move {
+                    let client = AsyncTcpStream::connect(addr).await.unwrap();
+                    
+                    // Send
+                    let mut written = 0;
+                    while written < message.len() {
+                        let n = std::future::poll_fn(|cx| client.poll_write(cx, &message[written..])).await.unwrap();
+                        written += n;
+                    }
+
+                    // Read echo
+                    let mut read_buf = vec![0u8; message.len()];
+                    let mut read_bytes = 0;
+                    while read_bytes < message.len() {
+                        let n = std::future::poll_fn(|cx| client.poll_read(cx, &mut read_buf[read_bytes..])).await.unwrap();
+                        if n == 0 { break; }
+                        read_bytes += n;
+                    }
+                    assert_eq!(&read_buf, message);
+                }));
+            }
+
+            for h in handles {
+                h.await.unwrap();
+            }
+        }, std::time::Duration::from_secs(5));
+    }
+
+    #[test]
+    fn test_stress_panic_propagation() {
+        let num_tasks = 100;
+        
+        crate::utils::block_on_timeout(async move {
+            let mut handles = Vec::new();
+            
+            for i in 0..num_tasks {
+                handles.push(spawn(async move {
+                    if i % 2 == 0 {
+                        panic!("intentional panic {}", i);
+                    }
+                    i
+                }));
+            }
+            
+            let mut success_count = 0;
+            let mut panic_count = 0;
+            
+            for h in handles {
+                match h.await {
+                    Ok(val) => {
+                        assert!(val % 2 != 0);
+                        success_count += 1;
+                    }
+                    Err(_) => {
+                        panic_count += 1;
+                    }
+                }
+            }
+            
+            assert_eq!(success_count, 50);
+            assert_eq!(panic_count, 50);
+        }, std::time::Duration::from_secs(10));
     }
 }
