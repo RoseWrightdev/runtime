@@ -95,4 +95,59 @@ mod tests {
             assert_eq!(stealers[0], 1);
         });
     }
+
+    #[test]
+    fn test_try_push_local_logic() {
+        use crate::core::scheduler::scheduler::Scheduler;
+        use crate::core::scheduler::task::Task;
+
+        let scheduler = Arc::new(Scheduler::new_with_workers(1));
+        let mut local_queue = LocalQueue::new();
+
+        // 1. Manually set up the local queue pointer in the context
+        Context::with(|ctx| {
+            ctx.local_queue_ptr = Some(&mut local_queue as *mut _);
+        });
+
+        // Use Task::spawn (pub(crate)) to create test task references
+        let t1 = Task::spawn(async {}, scheduler.clone());
+        let t2 = Task::spawn(async {}, scheduler.clone());
+        let t3 = Task::spawn(async {}, scheduler.clone());
+
+        // 2. First push: Should go to the empty LIFO slot
+        assert!(Context::try_push_local(t1.clone(), &scheduler));
+        // LIFO slot is private so we check the queue instead
+        assert!(
+            local_queue.pop().is_none(),
+            "t1 should be in LIFO, not in queue"
+        );
+
+        // 3. Second push: Should move t1 to the local queue and put t2 in LIFO
+        assert!(Context::try_push_local(t2.clone(), &scheduler));
+        assert!(
+            local_queue.pop().is_some(),
+            "t1 should have moved to the queue"
+        );
+        assert!(
+            local_queue.pop().is_none(),
+            "Only one task (t1) should be in the queue"
+        );
+
+        // 4. Third push: Should move t2 to the local queue and put t3 in LIFO
+        assert!(Context::try_push_local(t3.clone(), &scheduler));
+        assert!(
+            local_queue.pop().is_some(),
+            "t2 should have moved to the queue"
+        );
+        assert!(
+            local_queue.pop().is_none(),
+            "Only one task (t2) should be in the queue"
+        );
+
+        // Clean up to avoid dangling pointers in TLS
+        Context::with(|ctx| {
+            ctx.local_queue_ptr = None;
+            ctx.lifo_slot.take();
+        });
+    }
 }

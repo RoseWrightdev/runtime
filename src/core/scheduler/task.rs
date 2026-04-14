@@ -34,7 +34,7 @@ pub(crate) struct TaskVTable {
 }
 
 pub struct TaskRef {
-    ptr: NonNull<TaskHeader>,
+    pub(crate) ptr: NonNull<TaskHeader>,
 }
 
 unsafe impl Send for TaskRef {}
