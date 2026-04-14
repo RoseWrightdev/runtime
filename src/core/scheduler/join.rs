@@ -92,3 +92,59 @@ impl<T> Future for JoinHandle<T> {
         Poll::Pending
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::scheduler::scheduler::Scheduler;
+    use crate::core::scheduler::task::Task;
+    use std::sync::Arc;
+
+    #[test]
+    fn test_join_handle_drop_before_complete() {
+        let scheduler = Arc::new(Scheduler::new_with_workers(0));
+        let (tx, rx) = std::sync::mpsc::channel();
+        
+        // Spawn a task and immediately drop its JoinHandle
+        let task = Task::spawn(async move {
+            tx.send(()).unwrap();
+        }, scheduler.clone());
+        
+        let jh = JoinHandle::<()>::new(task.clone());
+        drop(jh);
+        
+        // The task should still be alive and pollable.
+        // We poll it manually to verify completion.
+        let waker = task.waker();
+        let mut cx = std::task::Context::from_waker(&waker);
+        
+        unsafe {
+            (task.as_ptr().as_ref().vtable.poll)(task.as_ptr(), &mut cx);
+        }
+        
+        // Check that task executed
+        rx.recv().expect("Task should have executed");
+    }
+
+    #[test]
+    #[should_panic(expected = "JoinHandle polled after completion")]
+    fn test_join_handle_double_poll_panic() {
+        let scheduler = Arc::new(Scheduler::new());
+        let task = Task::spawn(async { 42 }, scheduler.clone());
+        let mut jh = JoinHandle::<i32>::new(task.clone());
+        
+        let waker = task.waker();
+        let mut cx = std::task::Context::from_waker(&waker);
+        
+        // Poll and finish the task
+        unsafe {
+            (task.as_ptr().as_ref().vtable.poll)(task.as_ptr(), &mut cx);
+        }
+        
+        // Join once
+        let mut jh_pin = std::pin::Pin::new(&mut jh);
+        let _ = jh_pin.as_mut().poll(&mut cx);
+        
+        // Join again - should panic because state is now Joined (3)
+        let _ = jh_pin.as_mut().poll(&mut cx);
+    }
+}

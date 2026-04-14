@@ -1,94 +1,75 @@
-use taiga::core::runtime::runtime::Runtime as TaigaRuntime;
-use futures::future::{BoxFuture, FutureExt};
 use std::time::Instant;
-
-fn taiga_fib(n: u32) -> BoxFuture<'static, u32> {
-    async move {
-        if n <= 1 {
-            return n;
-        }
-
-        let f1 = taiga::spawn(taiga_fib(n - 1));
-        let f2 = taiga::spawn(taiga_fib(n - 2));
-
-        f1.await.unwrap() + f2.await.unwrap()
-    }.boxed()
-}
-
-fn tokio_fib(n: u32) -> BoxFuture<'static, u32> {
-    async move {
-        if n <= 1 {
-            return n;
-        }
-
-        let f1 = tokio::spawn(tokio_fib(n - 1));
-        let f2 = tokio::spawn(tokio_fib(n - 2));
-
-        f1.await.unwrap() + f2.await.unwrap()
-    }.boxed()
-}
-
-async fn taiga_burst(count: usize) {
-    let mut handles = Vec::with_capacity(count);
-    for _ in 0..count {
-        handles.push(taiga::spawn(async {}));
-    }
-    for h in handles {
-        let _ = h.await;
-    }
-}
-
-async fn tokio_burst(count: usize) {
-    let mut handles = Vec::with_capacity(count);
-    for _ in 0..count {
-        handles.push(tokio::spawn(async {}));
-    }
-    for h in handles {
-        let _ = h.await;
-    }
-}
+use taiga::net::{AsyncTcpListener, AsyncTcpStream};
+use std::io::{Read, Write};
+use std::net::SocketAddr;
 
 fn main() {
-    let fib_n = 15;
-    let burst_count = 10_000;
+    println!("Taiga vs Standard Threaded Echo Benchmark");
+    println!("-----------------------------------------");
 
-    println!("--- Benchmarking Recursive Fibonacci (Depth {}) ---", fib_n);
+    let addr: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+    let num_iterations = 1000;
 
-    // Taiga Fib
-    {
-        let rt = TaigaRuntime::new();
-        let start = Instant::now();
-        let res = rt.block_on(taiga_fib(fib_n));
-        let duration = start.elapsed();
-        println!("Taiga Fib:  {:?} (result: {})", duration, res);
+    // 1. Taiga Benchmark
+    let taiga_start = Instant::now();
+    taiga::block_on(async move {
+        let listener = AsyncTcpListener::bind(addr).unwrap();
+        
+        taiga::spawn(async move {
+            for _ in 0..num_iterations {
+                if let Ok((stream, _)) = listener.accept().await {
+                    taiga::spawn(async move {
+                        let mut buf = [0u8; 1024];
+                        if let Ok(n) = stream.read(&mut buf).await {
+                            let _ = stream.write(&buf[..n]).await;
+                        }
+                    });
+                }
+            }
+        });
+
+        for _ in 0..num_iterations {
+            let stream = AsyncTcpStream::connect(addr).await.unwrap();
+            stream.write(b"hello taiga").await.unwrap();
+            let mut buf = [0u8; 11];
+            stream.read(&mut buf).await.unwrap();
+            assert_eq!(&buf, b"hello taiga");
+        }
+    });
+    let taiga_duration = taiga_start.elapsed();
+    println!("Taiga (Async): {:?}", taiga_duration);
+
+    // 2. Standard Threads Benchmark
+    let std_start = Instant::now();
+    let std_addr: SocketAddr = "127.0.0.1:9998".parse().unwrap();
+    let std_listener = std::net::TcpListener::bind(std_addr).unwrap();
+    std::thread::spawn(move || {
+        for _ in 0..num_iterations {
+            if let Ok((mut stream, _)) = std_listener.accept() {
+                std::thread::spawn(move || {
+                    let mut buf = [0u8; 1024];
+                    if let Ok(n) = stream.read(&mut buf) {
+                        let _ = stream.write_all(&buf[..n]);
+                    }
+                });
+            }
+        }
+    });
+
+    for _ in 0..num_iterations {
+        let mut stream = std::net::TcpStream::connect(std_addr).unwrap();
+        stream.write_all(b"hello std").unwrap();
+        let mut buf = [0u8; 9];
+        stream.read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, b"hello std");
     }
+    let std_duration = std_start.elapsed();
+    println!("Std (Threads): {:?}", std_duration);
 
-    // Tokio Fib
-    {
-        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-        let start = Instant::now();
-        let res = rt.block_on(tokio_fib(fib_n));
-        let duration = start.elapsed();
-        println!("Tokio Fib:  {:?} (result: {})", duration, res);
-    }
-
-    println!("\n--- Benchmarking Task Burst ({} Tasks) ---", burst_count);
-
-    // Taiga Burst
-    {
-        let rt = TaigaRuntime::new();
-        let start = Instant::now();
-        rt.block_on(taiga_burst(burst_count));
-        let duration = start.elapsed();
-        println!("Taiga Burst: {:?}", duration);
-    }
-
-    // Tokio Burst
-    {
-        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-        let start = Instant::now();
-        rt.block_on(tokio_burst(burst_count));
-        let duration = start.elapsed();
-        println!("Tokio Burst: {:?}", duration);
+    println!("\nConclusion:");
+    if taiga_duration < std_duration {
+        println!("Taiga is {:.2}x faster than standard threads!", std_duration.as_secs_f64() / taiga_duration.as_secs_f64());
+    } else {
+        println!("Standard threads were slightly faster (expected for low concurrency/localhost overhead)");
     }
 }

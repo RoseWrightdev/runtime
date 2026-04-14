@@ -90,6 +90,14 @@ impl AsyncTcpStream {
     pub fn peer_addr(&self) -> io::Result<SocketAddr> {
         self.inner.peer_addr()
     }
+
+    pub async fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
+        std::future::poll_fn(|cx| self.poll_read(cx, buf)).await
+    }
+
+    pub async fn write(&self, buf: &[u8]) -> io::Result<usize> {
+        std::future::poll_fn(|cx| self.poll_write(cx, buf)).await
+    }
 }
 
 impl Drop for AsyncTcpStream {

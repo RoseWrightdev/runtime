@@ -99,7 +99,7 @@ mod tests {
             let actual_addr = listener.local_addr().unwrap();
             
             let num_clients = 5;
-            let (tx, rx) = std::sync::mpsc::channel();
+            let (tx, _rx) = std::sync::mpsc::channel();
             
             for i in 0..num_clients {
                 let tx = tx.clone();

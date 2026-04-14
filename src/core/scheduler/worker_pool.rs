@@ -147,4 +147,31 @@ mod tests {
             assert_eq!(lock.len(), 4);
         }
     }
+
+    #[test]
+    fn test_pool_unparking_round_robin() {
+        let pool = Pool::new(4);
+        
+        // Initial next_unparker is 0
+        assert_eq!(pool.next_unparker.load(Ordering::Relaxed), 0);
+        
+        // Notify 2 should unpark 0 and 1, next should be 2
+        pool.notify_many(2);
+        assert_eq!(pool.next_unparker.load(Ordering::Relaxed), 2);
+        
+        // Notify 3 should unpark 2, 3, and wrap to 0, next should be 5
+        pool.notify_many(3);
+        assert_eq!(pool.next_unparker.load(Ordering::Relaxed), 5);
+    }
+
+    #[test]
+    fn test_empty_pool() {
+        let pool = Pool::new(0);
+        assert_eq!(pool.unparkers.len(), 0);
+        assert_eq!(pool.stealers.len(), 0);
+        
+        // Should not panic
+        pool.notify_many(1);
+        pool.unpark_all();
+    }
 }

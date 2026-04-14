@@ -307,4 +307,26 @@ mod tests {
             assert_eq!(panic_count, 50);
         }, std::time::Duration::from_secs(10));
     }
+
+    #[test]
+    fn test_task_nesting() {
+        crate::utils::block_on_timeout(async {
+            // Spawn a task that itself spawns another task
+            let res = crate::spawn(async {
+                let inner_res = crate::spawn(async {
+                    100
+                }).await.unwrap();
+                inner_res + 23
+            }).await.unwrap();
+            
+            assert_eq!(res, 123);
+        }, std::time::Duration::from_secs(5));
+    }
+
+    #[test]
+    #[should_panic(expected = "Taiga: spawn called outside of a runtime context")]
+    fn test_external_spawn_panic() {
+        // Calling spawn outside of a block_on or any runtime thread should panic
+        let _ = crate::spawn(async {});
+    }
 }

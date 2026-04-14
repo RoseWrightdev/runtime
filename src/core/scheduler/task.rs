@@ -378,4 +378,60 @@ mod tests {
             delta
         );
     }
+
+    #[test]
+    fn test_task_payload_cleanup() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        
+        static DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
+        
+        struct DropTracker;
+        impl Drop for DropTracker {
+            fn drop(&mut self) {
+                DROP_COUNT.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        
+        let scheduler = Arc::new(Scheduler::new());
+        
+        // CASE 1: Task completed and joined
+        {
+            let tracker = DropTracker;
+            let task = Task::spawn(async move {
+                let _t = tracker;
+                42
+            }, scheduler.clone());
+            
+            let waker = task.waker();
+            let mut cx = std::task::Context::from_waker(&waker);
+            
+            // Poll to completion
+            unsafe {
+                (task.as_ptr().as_ref().vtable.poll)(task.as_ptr(), &mut cx);
+            }
+            
+            // Ref count is 1 (task_ref). 
+            // Future should be dropped. Drop count should be 1.
+            assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 1);
+            
+            drop(task);
+        }
+        
+        // Reset count
+        DROP_COUNT.store(0, Ordering::SeqCst);
+        
+        // CASE 2: Task cancelled (dropped before completion)
+        {
+            let tracker = DropTracker;
+            let task = Task::spawn(async move {
+                let _t = tracker;
+            }, scheduler.clone());
+            
+            // Currently ref_count is 1.
+            drop(task);
+            // ref_count becomes 0, payload should be dropped.
+            assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 1);
+        }
+    }
 }
+
