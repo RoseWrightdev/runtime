@@ -86,28 +86,38 @@ impl Scheduler {
         self.worker_pool.start(self.clone());
     }
 
-    pub(crate) fn notify(&self) {
-        if self.searching_workers.load(Ordering::Acquire) == 0 {
-            self.worker_pool.notify_many(1);
-        }
-        // Always wake the reactor to be safe, especially if the last searching
-        // worker is currently blocked in mio::poll().
-        self.reactor.wakeup();
-    }
 
     pub fn notify_adaptive(&self) {
         let searching = self.searching_workers.load(Ordering::Acquire);
 
-        // If searching workers are low, we must unpark one.
-        // We also always wake the reactor to pull the Guardian out of poll().
+        // ALWAYS unpark at least one worker when a task is pushed to the global queue.
+        // This ensures that we never miss a task due to a race between searching 
+        // and parking. Crossbeam's Unparker::unpark is a lightweight atomic operation.
+        self.worker_pool.notify_many(1);
+
         if searching == 0 {
-            self.notify();
+            // Only wake the reactor if no one is searching. 
+            // This is the most expensive syscall (mio::Waker::wake).
+            self.reactor.wakeup();
         } else {
-            // Even with searchers, we unpark an extra one occasionally under load
-            // to mitigate "park-at-the-same-moment" races.
-            if self.global_queue.len() > searching {
-                self.worker_pool.notify_many(1);
+            // Load-based unparking: if the global queue has significantly more tasks
+            // than active searchers, wake more workers to assist.
+            let queue_len = self.global_queue.len();
+            if queue_len > searching {
+                // Determine how many extra workers to wake based on queue pressure
+                let to_wake = ((queue_len - searching) / 4).max(1).min(4);
+                self.worker_pool.notify_many(to_wake);
             }
+        }
+    }
+
+    pub(crate) fn notify_local(&self) {
+        // Light notification for local queue pushes. 
+        // If everyone else is parked, they won't steal from this local queue.
+        if self.searching_workers.load(Ordering::Acquire) == 0 {
+            self.worker_pool.notify_many(1);
+            // We also wake the reactor just in case the only worker awake is
+            // the Guardian blocked in poll, who needs to know to check global/stealing.
             self.reactor.wakeup();
         }
     }

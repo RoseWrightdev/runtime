@@ -10,11 +10,6 @@ pub use crate::core::scheduler::join::JoinHandle;
 use std::any::Any;
 use std::future::Future;
 
-#[cfg(test)]
-use std::sync::OnceLock;
-
-#[cfg(test)]
-static GLOBAL_RUNTIME: OnceLock<Runtime> = OnceLock::new();
 
 pub fn spawn<F, T>(future: F) -> JoinHandle<T>
 where
@@ -31,10 +26,6 @@ where
     F: Future + Send + 'static,
     F::Output: Send + 'static,
 {
-    #[cfg(test)]
-    return GLOBAL_RUNTIME.get_or_init(|| Runtime::new()).block_on(future);
-
-    #[cfg(not(test))]
     Runtime::new().block_on(future)
 }
 
@@ -370,6 +361,36 @@ mod tests {
             // and waited for the reactor poll timeout (currently 100ms).
             assert!(elapsed < Duration::from_millis(100), "Slow task pick-up: {:?}. Likely lost wakeup!", elapsed);
         }
+    }
+
+    #[test]
+    fn test_task_reschedule_purity() {
+        use std::pin::Pin;
+        use std::task::{Context, Poll};
+
+        struct YieldingFuture {
+            yielded: bool,
+        }
+
+        impl Future for YieldingFuture {
+            type Output = ();
+
+            fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+                if !self.yielded {
+                    self.yielded = true;
+                    // Wake ourselves and return Pending. 
+                    // This tests that the 'notified' flag is correctly reset 
+                    // and allows the task to be re-scheduled.
+                    cx.waker().wake_by_ref();
+                    return Poll::Pending;
+                }
+                Poll::Ready(())
+            }
+        }
+
+        crate::block_on(async {
+            YieldingFuture { yielded: false }.await;
+        });
     }
 
     #[test]

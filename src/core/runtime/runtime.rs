@@ -11,7 +11,12 @@ pub struct Runtime {
 
 impl Runtime {
     pub fn new() -> Self {
-        Self::with_workers(num_cpus::get())
+        #[cfg(test)]
+        let num_workers = 2; // Keep it lean for tests
+        #[cfg(not(test))]
+        let num_workers = num_cpus::get();
+        
+        Self::with_workers(num_workers)
     }
 
     pub fn with_workers(num_workers: usize) -> Self {

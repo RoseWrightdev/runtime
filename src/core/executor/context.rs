@@ -9,6 +9,7 @@ use std::cell::Cell;
 use std::ptr;
 
 use crossbeam::utils::CachePadded;
+use crate::core::runtime::context::Context as RuntimeContext;
 
 thread_local! {
     static SLOW_CONTEXT: RefCell<Box<Context>> = RefCell::new(Box::new(Context::new()));
@@ -46,6 +47,10 @@ impl Context {
                 if let Some(old_task) = ctx.lifo_slot.replace(task) {
                     unsafe {
                         (*queue_ptr).push(old_task);
+                        // Notify that a task is available for stealing
+                        if let Some(rt) = RuntimeContext::current() {
+                            rt.notify_local();
+                        }
                     }
                 }
                 true

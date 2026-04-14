@@ -139,6 +139,12 @@ impl Task {
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
+        // Reset the notified flag. If the task yields (returns Pending), 
+        // a subsequent wakeup will correctly re-schedule it.
+        unsafe {
+            ptr.as_ref().notified.store(false, Ordering::SeqCst);
+        }
+
         let (future_ptr, waker) = unsafe {
             let header = ptr.as_ref();
             let future_ptr = (ptr.as_ptr() as *mut u8).add(header.future_offset) as *mut F;
