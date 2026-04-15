@@ -1,8 +1,6 @@
 # Async Runtime
 
-A minimal, high-performance asynchronous runtime in Rust implementing a work-stealing executor and epoll-based reactor. This project explores the tradeoffs between scheduling fairness and throughput, specifically how biased work-stealing and reduced synchronization can improve performance in low-concurrency I/O-bound workloads.
-
-In controlled benchmarks, the runtime achieves up to 1.36× higher throughput than Tokio at ~250 concurrent connections. These gains come from a greedy scheduling strategy and locality-favoring (biased) work-stealing, which reduce cross-thread coordination and queue contention at the cost of fairness and scalability. 
+A minimal, high-performance asynchronous runtime in Rust implementing a work-stealing executor and epoll-based reactor. 
 
 ```mermaid
 sequenceDiagram
