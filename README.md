@@ -1,6 +1,6 @@
 # Async Runtime
 
-A minimal, high-performance asynchronous runtime in Rust implementing a work-stealing executor and epoll-based reactor. 
+A minimal, high-performance asynchronous runtime in Rust implementing a work-stealing executor and epoll-based reactor. It provides significant performance gains over tokio at low to medium levels of concurnecy (100-500 connnections) through a greedy scheduler which prioritizes cache locality over load balencing and fairness. 
 
 ```mermaid
 sequenceDiagram
