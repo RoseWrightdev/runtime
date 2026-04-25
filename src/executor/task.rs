@@ -16,30 +16,56 @@ use futures::task::ArcWake;
 use crate::executor::scheduler::Scheduler;
 use crate::executor::join_handle::JoinError;
 
+/// Task is idle and not currently in any queue.
 pub(crate) const STATE_IDLE: u8 = 0;
+/// Task is scheduled for execution and is in a queue (local or global).
 pub(crate) const STATE_SCHEDULED: u8 = 1;
+/// Task is currently being polled by a worker.
 pub(crate) const STATE_POLLING: u8 = 2;
 
+/// Task is currently running and has not yet produced a result.
 pub(crate) const JOIN_STATE_RUNNING: u8 = 0;
+/// Task has completed and the result is available in the `result` field.
 pub(crate) const JOIN_STATE_READY: u8 = 1;
+/// The result has been consumed by a `JoinHandle`.
 pub(crate) const JOIN_STATE_JOINED: u8 = 2;
 
 
+/// Tracks the execution status and priority of a task.
 pub(crate) struct ExecutionState {
+    /// The current execution state (IDLE, SCHEDULED, or POLLING).
     pub(crate) state: AtomicU8,
+    /// Number of consecutive times this task has been woken into the LIFO slot.
+    /// Used to prevent starvation of other tasks.
     pub(crate) lifo_count: AtomicU8,
 }
 
+/// The unit of execution in the Taiga runtime.
+/// 
+/// A `Task` wraps a future and its associated metadata, such as execution state,
+/// join state, and result storage. Tasks are designed to be recycled via [`Task::reuse`]
+/// to avoid the overhead of allocating new `Arc<Task>` objects for every spawn.
 pub struct Task {
+    /// The underlying future, type-erased via [`RawFuture`].
     pub(crate) future: UnsafeCell<RawFuture>,
+    /// The scheduler responsible for this task.
     pub(crate) scheduler: Arc<Scheduler>,
+    /// Execution-related state (atomic).
     pub(crate) exec_state: CachePadded<ExecutionState>,
+    /// Join-related state (atomic).
     pub(crate) join_state: CachePadded<AtomicU8>,
+    /// Storage for the future's output or a panic error.
+    /// 
+    /// # Safety
+    /// 
+    /// Access is synchronized via `join_state`.
     pub(crate) result: UnsafeCell<Option<Result<Box<dyn Any + Send>, JoinError>>>,
+    /// The waker for a `JoinHandle` awaiting this task.
     pub(crate) join_waker: UnsafeCell<Option<std::task::Waker>>,
 }
 
 impl Task {
+    /// Creates a new task.
     pub(crate) fn new<F>(
         future: F,
         scheduler: Arc<Scheduler>,
@@ -61,6 +87,17 @@ impl Task {
         })
     }
 
+    /// Re-initializes an existing task with a new future.
+    /// 
+    /// This allows the runtime to recycle the `Arc<Task>` allocation and its 
+    /// associated atomic state, significantly reducing allocation overhead 
+    /// under high churn.
+    /// 
+    /// # Safety
+    /// 
+    /// The caller must ensure that the task is currently in the `IDLE` state 
+    /// and that the new future's memory layout is compatible with the 
+    /// task's existing allocation.
     pub(crate) fn reuse<F>(arc_self: &Arc<Self>, future: F)
     where
         F: Future<Output = ()> + Send + 'static,
@@ -130,14 +167,24 @@ impl ArcWake for Task {
     }
 }
 
+/// A type-erased future.
+/// 
+/// `RawFuture` stores a future on the heap and provides a vtable of function 
+/// pointers (`poll_fn`, `drop_fn`) to interact with it without knowing its 
+/// original type `F`. This allows [`Task`] to be non-generic.
 pub struct RawFuture {
+    /// Pointer to the future's state on the heap.
     pub(crate) ptr: *mut u8,
+    /// The memory layout of the future's state.
     pub(crate) layout: std::alloc::Layout,
+    /// Function pointer to poll the future.
     pub(crate) poll_fn: unsafe fn(*mut u8, *mut Context<'_>) -> std::task::Poll<()>,
+    /// Function pointer to drop the future's state.
     pub(crate) drop_fn: unsafe fn(*mut u8),
 }
 
 impl RawFuture {
+    /// Allocates and initializes a new `RawFuture`.
     pub fn new<F>(future: F, layout: Option<std::alloc::Layout>) -> Self
     where
         F: Future<Output = ()> + Send + 'static,
