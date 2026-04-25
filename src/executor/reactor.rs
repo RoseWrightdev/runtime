@@ -9,38 +9,64 @@ use polling::{Events, Poller, Event, AsSource, AsRawSource};
 
 use crate::time::wheel::TimerWheel;
 
+/// A registration request sent to the reactor.
 pub enum Registration {
+    /// Register interest in I/O events for a file descriptor.
     IO {
+        /// The file descriptor (or handle) being registered.
         key: usize,
+        /// The waker to be called when the event occurs.
         waker: Waker,
+        /// Interest in read readiness.
         read: bool,
+        /// Interest in write readiness.
         write: bool,
     },
+    /// Register a timer to expire at a specific instant.
     Timer {
+        /// The instant at which the timer should fire.
         deadline: Instant,
+        /// The waker to be called when the timer expires.
         waker: Waker,
     },
+    /// Remove interest in a file descriptor.
     Delete {
+        /// The key to be removed.
         key: usize,
     },
 }
 
+/// The internal mutable state of the reactor.
 pub struct ReactorState {
+    /// Fast lookup for file descriptors with values < 1024.
     hot_slots: Vec<Option<(Option<Waker>, Option<Waker>)>>,
+    /// Fallback lookup for file descriptors with values >= 1024.
     cold_slots: HashMap<usize, (Option<Waker>, Option<Waker>)>,
+    /// The hierarchical timer wheel used to manage timeouts efficiently.
     timer_wheel: TimerWheel,
 }
 
+/// The I/O and timer driver for the Taiga runtime.
+/// 
+/// The `Reactor` is responsible for monitoring file descriptors for events and 
+/// managing scheduled timers. It uses an OS-specific poller (via the `polling` 
+/// crate) and a hierarchical timer wheel.
+/// 
+/// Multiple worker threads can attempt to drive the reactor simultaneously, 
+/// but only one will succeed in becoming the "pollster" at any given time.
 pub struct Reactor {
-    // setup
+    /// The underlying OS poller.
     poller: Poller,
 
-    //worker -> reactor
+    /// Queue of pending registrations sent by worker threads.
     registrations: CachePadded<SegQueue<Vec<Registration>>>,
+    /// Flag indicating that the poller has been notified of new work.
     pub(crate) notified: CachePadded<AtomicBool>,
 
-    // poller only
+    /// Global shutdown signal.
     pub(crate) shutdown: Arc<AtomicBool>,
+    /// The internal state, protected by a mutex for synchronization when 
+    /// dispatching events or processing registrations.
     state: Mutex<ReactorState>,
     events: Mutex<Events>,
     is_polling: AtomicBool,
@@ -79,7 +105,10 @@ impl Reactor {
         self.push_batch(vec![Registration::Delete { key }]);
     }
 
-    /// Pushes a batch of registrations and notifies the reactor.
+    /// Pushes a batch of registrations to the reactor and triggers a wake-up.
+    /// 
+    /// This is typically called by worker threads to submit buffered I/O or 
+    /// timer requests.
     pub(crate) fn push_batch(&self, batch: Vec<Registration>) {
         if !batch.is_empty() {
             self.registrations.push(batch);
@@ -94,7 +123,15 @@ impl Reactor {
         }
     }
 
-    /// Attempts to poll the reactor if no other worker is currently polling.
+    /// Attempts to drive the reactor.
+    /// 
+    /// Only one thread can drive the reactor at a time. If another thread is 
+    /// already polling, this method returns `false` immediately.
+    /// 
+    /// While driving, the reactor will:
+    /// 1. Process all pending registrations.
+    /// 2. Wait for OS events with a timeout based on the next timer expiration.
+    /// 3. Dispatch wakers for all triggered I/O events and expired timers.
     pub(crate) fn try_poll(&self) -> bool {
         // Only one worker can be the Pollster at a time.
         if self.is_polling.swap(true, Ordering::Acquire) {
