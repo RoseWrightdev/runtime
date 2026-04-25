@@ -61,7 +61,7 @@ pub struct Task {
     /// Access is synchronized via `join_state`.
     pub(crate) result: UnsafeCell<Option<Result<Box<dyn Any + Send>, JoinError>>>,
     /// The waker for a `JoinHandle` awaiting this task.
-    pub(crate) join_waker: futures::task::AtomicWaker,
+    pub(crate) join_waker: CachePadded<futures::task::AtomicWaker>,
 }
 
 impl Task {
@@ -83,7 +83,7 @@ impl Task {
             }),
             join_state: CachePadded::new(AtomicU8::new(JOIN_STATE_RUNNING)),
             result: UnsafeCell::new(None),
-            join_waker: futures::task::AtomicWaker::new(),
+            join_waker: CachePadded::new(futures::task::AtomicWaker::new()),
         })
     }
 
