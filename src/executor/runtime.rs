@@ -25,9 +25,10 @@ impl Runtime {
         INIT_PANIC_HOOK.call_once(|| {
             let default_hook = std::panic::take_hook();
             std::panic::set_hook(Box::new(move |info| {
-                if !crate::executor::context::is_in_context() {
-                    default_hook(info);
-                }
+                // We always call the default hook to ensure panics are reported.
+                // In the future, we could enrich this with runtime-specific info
+                // if crate::executor::context::is_in_context() is true.
+                default_hook(info);
             }));
         });
 

@@ -52,9 +52,7 @@ impl<T: Any + Send + 'static> Future for JoinHandle<T> {
         }
 
         // 3. Register our waker
-        unsafe {
-            *self.task.join_waker.get() = Some(cx.waker().clone());
-        }
+        self.task.join_waker.register(cx.waker());
 
         // 4. Double-check state in case it finished during registration (to avoid lost wakeups)
         if self.task.join_state.load(Ordering::Acquire) == JOIN_STATE_READY {

@@ -79,6 +79,54 @@ fn test_nested_spawn() {
 }
 
 #[test]
+fn test_panic_hook_delegation() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::panic;
+
+    let called = Arc::new(AtomicBool::new(false));
+    let called_clone = called.clone();
+
+    // Set a custom hook that we expect to be called
+    let default_hook = panic::take_hook();
+    panic::set_hook(Box::new(move |info| {
+        called_clone.store(true, Ordering::SeqCst);
+        default_hook(info);
+    }));
+
+    let runtime = crate::Runtime::new();
+    
+    // This task panics. The runtime hook should delegate to our custom hook.
+    let _ = runtime.block_on(async {
+        let handle = crate::spawn(async {
+            panic!("Test panic delegation");
+        });
+        handle.await
+    });
+
+    // Clean up hook
+    let _ = panic::take_hook();
+
+    assert!(called.load(Ordering::SeqCst), "Panic hook was not called!");
+}
+
+#[test]
+fn test_join_handle_concurrency_stress() {
+    let runtime = crate::Runtime::new();
+    
+    for i in 0..5000 {
+        let handle = runtime.spawn(async move {
+            i
+        });
+
+        let res = runtime.block_on(async move {
+            handle.await.unwrap()
+        });
+        
+        assert_eq!(res, i);
+    }
+}
+
+#[test]
 fn test_runtime_shutdown() {
     let runtime = Runtime::new();
     // Dropping the runtime should join all threads and exit cleanly.

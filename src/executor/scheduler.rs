@@ -97,9 +97,7 @@ impl Scheduler {
 
             // Mark a READY and wake joiner
             task.join_state.store(crate::executor::task::JOIN_STATE_READY, Ordering::Release);
-            if let Some(waker) = unsafe { &mut *task.join_waker.get() }.take() {
-                waker.wake();
-            }
+            task.join_waker.wake();
         };
 
         let task = self.spawn_internal_ref(wrapped_future);
