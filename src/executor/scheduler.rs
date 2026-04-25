@@ -14,8 +14,19 @@ use crate::executor::Task;
 use crate::executor::join_handle::JoinHandle;
 use crate::executor::context::CURRENT_TASK;
 
-/// Coordinates and distributes tasks accross all worker threads
-/// uses `crossbeam::deque::Injector`
+/// The global coordinator for task distribution and resource recycling.
+/// 
+/// The `Scheduler` manages the lifecycle of all tasks in the runtime. It uses a
+/// multi-level scheduling strategy:
+/// 
+/// 1.  **Global Injector**: A lock-free queue ([`Injector`][crossbeam::deque::Injector]) 
+///     for tasks spawned from outside the runtime or those that have been moved 
+///     to the global scope for fairness.
+/// 2.  **Work-Stealing**: Maintains references to worker-local stealers to allow 
+///     load balancing across threads.
+/// 3.  **Task Recycling**: Bucketized object pools ([`ArrayQueue`][crossbeam::queue::ArrayQueue]) 
+///     allow reusing `Arc<Task>` allocations, significantly reducing GC pressure 
+///     and allocator contention.
 pub struct Scheduler {
     /// The global injector queue for tasks that don't have a specific worker affinity.
     pub(crate) queue: Arc<Injector<Arc<Task>>>,
@@ -25,19 +36,23 @@ pub struct Scheduler {
     pub unparkers: Vec<Unparker>,
     /// Tracks the number of workers currently parked.
     pub sleeping_workers: CachePadded<AtomicUsize>,
-    /// Tracks the number of workers currently searching for work (safely throttles notifications).
+    /// Tracks the number of workers currently searching for work.
+    /// This is used to throttle notifications and prevent "thundering herd" issues.
     pub searching_workers: CachePadded<AtomicUsize>,
     /// Round-robin cursor for notifying workers.
     pub notify_cursor: CachePadded<AtomicUsize>,
     /// Shutdown signal.
     pub(crate) shutdown: CachePadded<AtomicBool>,
-    /// Bucketized task pools for zero-allocation recycling (indexed by power-of-two size).
+    /// Bucketized task pools for zero-allocation recycling.
+    /// 
+    /// Pools are indexed by the log2 of the task's size, starting at 32 bytes.
     pub task_pools: [Arc<ArrayQueue<Arc<Task>>>; 11],
     /// Callback to wake the reactor if a worker is blocked polling I/O.
     pub(crate) reactor_notifier: Box<dyn Fn() + Send + Sync>,
 }
 
 impl Scheduler {
+    /// Creates a new scheduler.
     pub(crate) fn new(
         stealers: Vec<Stealer<Arc<Task>>>, 
         unparkers: Vec<Unparker>, 
@@ -56,7 +71,10 @@ impl Scheduler {
         }
     }
 
-    /// Spawns a future onto the runtime and returns a JoinHandle to its result.
+    /// Spawns a future onto the runtime and returns a [`JoinHandle`] to its result.
+    /// 
+    /// This method wraps the provided future with panic protection and result 
+    /// reporting logic before passing it to the internal task allocator.
     pub fn spawn<F, T>(self: &Arc<Self>, future: F) -> JoinHandle<T>
     where 
         F: Future<Output = T> + Send + 'static,
@@ -123,11 +141,16 @@ impl Scheduler {
     }
 
 
+    /// Injects a task into the global queue and notifies available workers.
     pub(crate) fn inject(&self, task: Arc<Task>) {
         self.queue.push(task);
         self.notify();
     }
 
+    /// Signals that new work is available.
+    /// 
+    /// To prevent excessive context switching, this method only notifies a 
+    /// worker if fewer than two workers are currently searching for work.
     pub(crate) fn notify(&self) {
         // Relaxed threshold: Allow unparking if searching workers < 2.
         // This prevents the "single searcher" bottleneck during high-load bursts.
@@ -148,7 +171,9 @@ impl Scheduler {
     }
 
     /// Maps a memory layout to a specific size-bucket in the task pool.
+    /// 
     /// Buckets cover powers of two from 32B (Index 0) to 32KB (Index 10).
+    /// Returns `None` if the layout exceeds the maximum poolable size or alignment.
     pub(crate) fn pool_index(layout: std::alloc::Layout) -> Option<usize> {
         if layout.align() > 16 || layout.size() > 32768 {
             return None;
