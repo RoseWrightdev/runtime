@@ -7,12 +7,20 @@ use num_cpus;
 use crossbeam::sync::Parker;
 use crate::executor::{Handle, Reactor, Scheduler, Worker, join_handle};
 
+/// The Taiga asynchronous runtime.
+/// 
+/// The `Runtime` manages a thread pool of workers, a scheduler, and a reactor.
+/// It provides the entry point for spawning and executing asynchronous tasks.
 pub struct Runtime {
     handle: Handle,
     workers: Vec<std::thread::JoinHandle<()>>,
 }
 
 impl Runtime {
+    /// Creates a new runtime with one worker thread per CPU core.
+    /// 
+    /// This also initializes a global panic hook that ensures panics within 
+    /// the runtime context are handled correctly.
     pub fn new() -> Self {
         INIT_PANIC_HOOK.call_once(|| {
             let default_hook = std::panic::take_hook();
@@ -64,6 +72,9 @@ impl Runtime {
         }
     }
 
+    /// Spawns a future onto the runtime's thread pool.
+    /// 
+    /// Returns a [`JoinHandle`] that can be used to await the result.
     pub fn spawn<F, T>(&self, future: F) -> join_handle::JoinHandle<T>
     where
         F: Future<Output = T> + Send + 'static,
@@ -72,6 +83,11 @@ impl Runtime {
         self.handle.scheduler.spawn(future)
     }
 
+    /// Runs a future to completion on the current thread.
+    /// 
+    /// This function blocks the current thread until the future has finished 
+    /// executing. It enters the runtime context so that the future can access 
+    /// runtime features like spawning or I/O.
     pub fn block_on<F>(&self, future: F) -> F::Output
     where
         F: Future + Send + 'static,
