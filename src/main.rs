@@ -8,6 +8,19 @@ use std::os::unix::io::{AsRawFd, FromRawFd};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        println!("Taiga Runtime Benchmark");
+        println!("\nUsage: cargo run --release -- [concurrency] [total_messages] [payload_size] [--runs N]");
+        println!("\nArguments:");
+        println!("  concurrency     Number of concurrent connections (default: 50)");
+        println!("  total_messages  Total messages to send (default: 10000)");
+        println!("  payload_size    Size of each message in bytes (default: 65536)");
+        println!("\nFlags:");
+        println!("  --runs, -r      Number of runs to average (default: 1)");
+        println!("  --help, -h      Print this help message");
+        return;
+    }
+
     let concurrency = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(50);
     let total_messages = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(10000);
     let payload_size = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(65536);
