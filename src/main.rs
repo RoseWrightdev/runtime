@@ -8,7 +8,6 @@ use std::os::unix::io::{AsRawFd, FromRawFd};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let csv_mode = args.iter().any(|arg| arg == "--csv");
     let concurrency = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(50);
     let total_messages = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(10000);
     let payload_size = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(65536);
@@ -18,35 +17,33 @@ fn main() {
         .and_then(|w| w[1].parse::<usize>().ok())
         .unwrap_or(1);
 
-    if !csv_mode {
-		println!("\n\n");
-        println!(
-            "Payload: {} bytes | Concurrency: {} | Total: {} msgs | Runs: {}\n",
-            payload_size, concurrency, total_messages, runs
-        );
-    }
+    println!("\n\n");
+    println!(
+        "Payload: {} bytes | Concurrency: {} | Total: {} msgs | Runs: {}\n",
+        payload_size, concurrency, total_messages, runs
+    );
 
     let mut custom_run_results = Vec::new();
     let mut tokio_run_results = Vec::new();
 
     for i in 1..=runs {
-        if !csv_mode && runs > 1 {
+        if runs > 1 {
             println!("\x1b[1;36m▶️ Run {}/{}\x1b[0m", i, runs);
         }
 
         // Run Custom Runtime Benchmark
-        if !csv_mode && runs == 1 {
+        if runs == 1 {
             println!("\x1b[1;33m[1/2] Benchmarking Custom Runtime...\x1b[0m");
         }
         custom_run_results.push(run_custom_benchmark(concurrency, total_messages, payload_size));
         
         // Run Tokio Runtime Benchmark
-        if !csv_mode && runs == 1 {
+        if runs == 1 {
             println!("\x1b[1;33m[2/2] Benchmarking Tokio Runtime (Multi-thread)...\x1b[0m");
         }
         tokio_run_results.push(run_tokio_benchmark(concurrency, total_messages, payload_size));
 
-        if !csv_mode && runs > 1 {
+        if runs > 1 {
             println!("\x1b[1;32m   ✓ Finished run {}\x1b[0m", i);
         }
     }
@@ -54,20 +51,10 @@ fn main() {
     let custom_results = aggregate_median(custom_run_results);
     let tokio_results = aggregate_median(tokio_run_results);
 
-    if !csv_mode {
-        println!("\n\x1b[1;32m✅ All runs complete. Reporting Median Values:\x1b[0m\n");
-    }
+    println!("\n\x1b[1;32m✅ All runs complete. Reporting Median Values:\x1b[0m\n");
 
     // Display Results
-    if csv_mode {
-        println!("{},{},{},{:.2},{:.2},{:.2},{},{}", 
-            concurrency, total_messages, payload_size,
-            custom_results.throughput, tokio_results.throughput,
-            custom_results.throughput / tokio_results.throughput,
-            custom_results.p99, tokio_results.p99);
-    } else {
-        print_results_table(custom_results, tokio_results);
-    }
+    print_results_table(custom_results, tokio_results);
 }
 
 #[derive(Clone, Copy)]

@@ -329,7 +329,7 @@ mod tests {
         let id = 0;
         let parker = Parker::new();
         
-        let mut worker_instance = Worker::new(id, worker, handle, parker);
+        let worker_instance = Worker::new(id, worker, handle, parker);
         assert_eq!(worker_instance.id, 0);
         assert_eq!(worker_instance.tick, 0);
         assert_eq!(worker_instance.budget, 128);

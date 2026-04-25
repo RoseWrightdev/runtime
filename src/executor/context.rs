@@ -58,8 +58,3 @@ pub(crate) fn enter(handle: Handle) -> EnterGuard {
 pub(crate) fn enter_worker() {
     IS_WORKER.with(|w| w.set(true));
 }
-
-/// Returns `true` if the current thread is running within a runtime context.
-pub(crate) fn is_in_context() -> bool {
-    CONTEXT.with(|c| c.borrow().is_some())
-}

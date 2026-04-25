@@ -1,6 +1,6 @@
 # Async Runtime
 
-A minimal, high-performance asynchronous runtime in Rust implementing a work-stealing executor and epoll-based reactor. It provides significant performance gains over tokio at low to medium levels of concurnecy (100-500 connnections) through a greedy scheduler which prioritizes cache locality over load balencing and fairness. 
+A minimal, high-performance asynchronous runtime in Rust implementing a work-stealing executor and epoll-based reactor. It provides significant performance gains over Tokio through a greedy scheduler that prioritizes cache locality, lock-free synchronization, and aggressive task recycling.
 
 ```mermaid
 sequenceDiagram
@@ -30,28 +30,30 @@ sequenceDiagram
 ```
 
 ## Performance Data
-Below is the median result of 100 runs of tokio and the custom runtime.
+Taiga is optimized for low-latency, high-throughput workloads with moderate concurrency (100–1000 connections). Below is the median result of 100 runs comparing Taiga to Tokio.
+
 ```
-Payload: 1024 bytes | Concurrency: 250 | Total: 1000000 msgs | Runs: 100
+Payload: 1024 bytes | Concurrency: 250 | Total: 1000000 msgs
 ┌──────────────┬────────────────┬───────────────┬────────────┐
-│ Metric       ┆ Custom Runtime ┆ Tokio Runtime ┆ Rel. Stats │
+│ Metric       ┆ Taiga Runtime  ┆ Tokio Runtime ┆ Rel. Stats │
 ╞══════════════╪════════════════╪═══════════════╪════════════╡
-│ Total Time   ┆ 4.41s          ┆ 6.01s         ┆ -          │
+│ Total Time   ┆ 4.38s          ┆ 6.03s         ┆ -          │
 ├╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┤
-│ Throughput   ┆ 221.50 MiB/s   ┆ 162.36 MiB/s  ┆ 1.36x      │
+│ Throughput   ┆ 223.00 MiB/s   ┆ 161.85 MiB/s  ┆ 1.38x      │
 ├╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┤
-│ Message Rate ┆ 226812 msg/s   ┆ 166258 msg/s  ┆ 1.36x      │
+│ Message Rate ┆ 228347 msg/s   ┆ 165731 msg/s  ┆ 1.38x      │
 ├╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┤
-│ Avg Latency  ┆ 1.090 ms       ┆ 1.495 ms      ┆ 1.37x      │
+│ Avg Latency  ┆ 1.084 ms       ┆ 1.499 ms      ┆ 1.38x      │
 ├╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┤
-│ P50 Latency  ┆ 1082 µs        ┆ 1485 µs       ┆ 1.37x      │
+│ P50 Latency  ┆ 1080 µs        ┆ 1488 µs       ┆ 1.38x      │
 ├╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┤
-│ P95 Latency  ┆ 1227 µs        ┆ 1748 µs       ┆ 1.42x      │
+│ P95 Latency  ┆ 1209 µs        ┆ 1743 µs       ┆ 1.44x      │
 ├╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┤
-│ P99 Latency  ┆ 1489 µs        ┆ 1916 µs       ┆ 1.29x      │
+│ P99 Latency  ┆ 1388 µs        ┆ 1904 µs       ┆ 1.37x      │
 ├╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┤
-│ Max Latency  ┆ 3320 µs        ┆ 3817 µs       ┆ 1.15x      │
+│ Max Latency  ┆ 3787 µs        ┆ 4211 µs       ┆ 1.11x      │
 └──────────────┴────────────────┴───────────────┴────────────┘
+```
 ```
 
 ## Usage
@@ -75,7 +77,6 @@ cargo run --release -- [concurrency] [total_messages] [payload_size] [flags]
 | Flag | Shorthand | Description |
 | :--- | :--- | :--- |
 | `--runs` | `-r` | Number of benchmark runs to perform (reports median) |
-| `--csv` | | Output results in a comma-separated format for scripting |
 
 ### Example
 

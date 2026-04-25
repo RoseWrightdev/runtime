@@ -1,3 +1,12 @@
+//! The core executor and task management system for Taiga.
+//! 
+//! This module contains the primary components of the asynchronous runtime:
+//! - [`Runtime`]: The top-level orchestrator and entry point.
+//! - [`Scheduler`]: The work-stealing task distribution system.
+//! - [`Worker`]: The execution loop that runs on each thread.
+//! - [`Reactor`]: The I/O and timer event driver.
+//! - [`Task`]: The unit of execution, wrapping a type-erased future.
+
 pub mod runtime;    
 pub mod scheduler;  
 pub mod worker;     
