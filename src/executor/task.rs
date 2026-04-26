@@ -56,6 +56,10 @@ pub struct Task {
     pub(crate) join_state: CachePadded<AtomicU8>,
     /// Storage for the future's output or a panic error.
     /// 
+    /// This field uses **type erasure** (`dyn Any`) to allow the `Task` struct
+    /// to remain non-generic. This is critical for storing tasks in a common
+    /// scheduler queue regardless of their return type.
+    /// 
     /// # Safety
     /// 
     /// Access is synchronized via `join_state`.
@@ -169,15 +173,19 @@ impl ArcWake for Task {
 
 /// A type-erased future.
 /// 
-/// `RawFuture` stores a future on the heap and provides a vtable of function 
-/// pointers (`poll_fn`, `drop_fn`) to interact with it without knowing its 
-/// original type `F`. This allows [`Task`] to be non-generic.
+/// `RawFuture` is the core of the runtime's **type erasure** strategy. It stores 
+/// a future on the heap and provides a manual vtable of function pointers 
+/// (`poll_fn`, `drop_fn`) to interact with it without knowing its original type `F`. 
+/// 
+/// This allows the [`Task`] struct to be non-generic, which is required for:
+/// 1. Storing diverse tasks in the same scheduler queues.
+/// 2. Recycling `Task` allocations for different future types via [`Task::reuse`].
 pub struct RawFuture {
-    /// Pointer to the future's state on the heap.
+    /// Pointer to the future's state on the heap (type-erased).
     pub(crate) ptr: *mut u8,
     /// The memory layout of the future's state.
     pub(crate) layout: std::alloc::Layout,
-    /// Function pointer to poll the future.
+    /// Function pointer to poll the future (recovery of type `F` happens inside this fn).
     pub(crate) poll_fn: unsafe fn(*mut u8, *mut Context<'_>) -> std::task::Poll<()>,
     /// Function pointer to drop the future's state.
     pub(crate) drop_fn: unsafe fn(*mut u8),

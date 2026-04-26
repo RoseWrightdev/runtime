@@ -75,7 +75,9 @@ impl Runtime {
 
     /// Spawns a future onto the runtime's thread pool.
     /// 
-    /// Returns a [`JoinHandle`] that can be used to await the result.
+    /// This method erases the specific type of the future to allow it to be 
+    /// managed by the scheduler, returning a [`JoinHandle`] that "remembers" 
+    /// the return type `T` for safe recovery.
     pub fn spawn<F, T>(&self, future: F) -> join_handle::JoinHandle<T>
     where
         F: Future<Output = T> + Send + 'static,

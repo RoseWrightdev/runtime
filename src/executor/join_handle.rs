@@ -9,8 +9,19 @@ use crate::executor::task::{Task, JOIN_STATE_READY, JOIN_STATE_JOINED};
 
 pub type JoinError = Box<dyn Any + Send + 'static>;
 
+/// A handle that allows awaiting the result of a spawned task.
+///
+/// `JoinHandle` is generic over the task's return type `T`. However, the underlying
+/// [`Task`] is type-erased to allow it to be managed by the scheduler. `JoinHandle`
+/// acts as the bridge between the type-erased execution and the typed result.
 pub struct JoinHandle<T> {
+    /// The type-erased task.
     pub(crate) task: Arc<Task>,
+    /// A marker to "remember" the return type `T`. 
+    ///
+    /// This is necessary because `T` is not used in any other field (type erasure),
+    /// and it ensures the compiler understands the variance of `T` and allows
+    /// us to safely downcast the result when the task completes.
     pub(crate) _marker: PhantomData<T>,
 }
 
