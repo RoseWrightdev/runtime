@@ -46,14 +46,28 @@ pub struct ReactorState {
     timer_wheel: TimerWheel,
 }
 
-/// The I/O and timer driver for the Taiga runtime.
+/// The I/O and timer event notification system.
 /// 
-/// The `Reactor` is responsible for monitoring file descriptors for events and 
-/// managing scheduled timers. It uses an OS-specific poller (via the `polling` 
-/// crate) and a hierarchical timer wheel.
+/// The `Reactor` interfaces with the operating system's event notification 
+/// primitives (e.g., epoll on Linux, kqueue on macOS) to provide non-blocking 
+/// asynchronous I/O and timer management.
 /// 
-/// Multiple worker threads can attempt to drive the reactor simultaneously, 
-/// but only one will succeed in becoming the "pollster" at any given time.
+/// ## Operational Workflow
+/// 
+/// 1.  **Registration**: Asynchronous resources (sockets, timers) register 
+///     their interest in specific events by submitting a [`Registration`].
+/// 2.  **Event Polling**: Worker threads take turns driving the reactor's 
+///     wait loop. The driver thread blocks on the OS poller until events 
+///     occur or the next timer expiration is reached.
+/// 3.  **Task Rescheduling**: Upon event notification, the Reactor identifies 
+///     the associated wakers and triggers task re-scheduling via the 
+///     [`Scheduler`][crate::executor::Scheduler].
+/// 
+/// ## Efficient Timer Management
+/// 
+/// To support high-density timer sets, Taiga implements a **Hierarchical 
+/// Timer Wheel**. This structure allows for $O(1)$ insertion and efficient 
+/// expiration detection by bucketizing timers based on their deadlines.
 pub struct Reactor {
     /// The underlying OS poller.
     poller: Poller,

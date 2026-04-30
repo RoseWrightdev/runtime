@@ -14,13 +14,31 @@ use crate::executor::{
     Handle, Scheduler, Task,
 };
 
+/// The execution loop that runs on each background thread.
+/// 
+/// The `Worker` implements the primary polling loop for each execution thread. 
+/// Its execution strategy follows a strict priority order:
+/// 
+/// 1.  **LIFO Polling**: Checks the thread-local LIFO slot for immediate re-execution.
+/// 2.  **Local Deque Polling**: Checks the thread-local work-stealing deque.
+/// 3.  **Global Injection/Stealing**: Attempts to acquire work from the global 
+///     injector or by stealing from other workers.
+/// 4.  **Wait (Parking)**: If no work is found, the thread parks until 
+///     triggered by an external event or task injection.
 pub struct Worker {
+    /// Unique ID for this worker thread.
     id: usize,
+    /// The private task queue for this worker.
     queue: Option<deque::Worker<Arc<Task>>>,
+    /// A handle back to the runtime.
     handle: Handle,
+    /// Counter used for periodic maintenance tasks (like checking the global queue).
     tick: usize,
+    /// A "fuel" counter that prevents a single task from hogging the thread forever.
     budget: u8,
+    /// Mechanism to put the thread to sleep and wake it up.
     parker: Parker,
+    /// Local random number generator for picking which worker to steal from.
     rng: u32,
 }
 
@@ -47,6 +65,7 @@ impl Worker {
         }
     }
 
+    /// The main loop of the worker thread.
     pub fn run(&mut self) {
         let _guard = context::enter(self.handle.clone());
         // Register this thread as a worker to safely use LIFO slot
@@ -57,17 +76,21 @@ impl Worker {
         context::LOCAL_QUEUE_PTR.with(|q| q.set(&mut queue as *mut _));
 
         loop {
+            // Check if the whole runtime is shutting down
             if self.handle.scheduler.shutdown.load(Ordering::Acquire) {
                 break;
             }
 
+            // 1. Check if we've been running too long without a break
             self.cooperative_yield(&mut queue);
 
+            // 2. Try to find a task to run
             if let Some(task) = self.next_local_task(&mut queue) {
                 self.execute(task);
                 continue;
             }
 
+            // 3. If no local work, go look elsewhere or go to sleep
             self.search_and_park();
         }
 
@@ -76,9 +99,12 @@ impl Worker {
         self.queue = Some(queue);
     }
 
+    /// Implements "Cooperative Multitasking."
+    /// 
+    /// In Rust async, a task can theoretically run forever if it never `awaits`. 
+    /// This would "starve" other tasks. The `budget` ensures that after 128 
+    /// steps, we force the current thread to take a break and let others run.
     fn cooperative_yield(&mut self, queue: &mut deque::Worker<Arc<Task>>) {
-        // If the budget is exhausted, move a task to the global injector to ensure other
-        // workers have a chance to pick it up, preventing this worker from hogging tasks.
         if self.budget == 0 {
             self.budget = 128;
             let task = context::LIFO_SLOT
@@ -86,24 +112,26 @@ impl Worker {
                 .or_else(|| queue.pop());
 
             if let Some(task) = task {
+                // Push the task back to the global queue so others can help out
                 self.handle.scheduler.inject(task);
             }
         }
     }
 
+    /// Finds the next task to run, prioritizing local work for speed.
     fn next_local_task(&mut self, queue: &mut deque::Worker<Arc<Task>>) -> Option<Arc<Task>> {
-        // 1. Check LIFO slot for highest priority task (woken by the same thread)
+        // 1. Check LIFO slot (highest priority, best cache locality)
         let task = context::LIFO_SLOT.with(|slot| slot.borrow_mut().take());
         if task.is_some() {
             return task;
         }
 
-        // 2. Pop from local queue
+        // 2. Pop from my own private local queue
         if let Some(task) = queue.pop() {
             return Some(task);
         }
 
-        // 3. Periodically steal from global queue to ensure fairness
+        // 3. Periodically check the global queue to make sure those tasks aren't forgotten
         if self.tick % 61 == 0 {
             if let Steal::Success(task) = self.handle.scheduler.steal() {
                 return Some(task);
@@ -113,8 +141,9 @@ impl Worker {
         None
     }
 
+    /// The "Work-Stealing" and "Parking" logic.
     fn search_and_park(&mut self) {
-        // 4. Steal from other workers or global queue if local is empty        
+        // 1. Try to steal from other workers or the global queue
         self.handle.scheduler.searching_workers.fetch_add(1, Ordering::Relaxed);
         if let Some(task) = self.steal() {
             prefetch(Arc::as_ptr(&task));
@@ -126,7 +155,8 @@ impl Worker {
             return;
         }
 
-        // If still no work, try a short spin-loop before parking.
+        // 2. If still no work, try "spinning" (looping quickly) for a moment. 
+        // This is often faster than going to sleep if work arrives soon.
         for _ in 0..150 {
             if let Some(task) = std::hint::black_box(self.steal()) {
                 prefetch(Arc::as_ptr(&task));
@@ -149,7 +179,7 @@ impl Worker {
             std::hint::spin_loop();
         }
 
-        // 4. Fallback to parking or reactor polling
+        // 3. Still nothing? Prepare to go to sleep.
         self.handle.scheduler.searching_workers.fetch_sub(1, Ordering::Relaxed);
 
         // One final attempt to steal from the global injector if searching count is low.
@@ -170,13 +200,14 @@ impl Worker {
 
         self.handle.scheduler.sleeping_workers.fetch_add(1, Ordering::Release);
 
-        // Sync any pending reactor registrations from TLS before waiting
+        // Send any pending networking/timer requests to the Reactor
         self.handle.flush_registrations();
 
-        // Try to drive the reactor. If we acquire the lock, we wait for I/O events.
-        // If another worker is already driving it, we simply park.
+        // One worker is always responsible for "driving" the Reactor (watching I/O).
+        // If nobody else is doing it, I'll do it while I wait.
         if !self.handle.reactor.try_poll() {
             self.handle.flush_registrations();
+            // Someone else is driving the reactor, so I'll just truly sleep.
             self.parker.park();
         }
 
@@ -186,7 +217,9 @@ impl Worker {
             .fetch_sub(1, Ordering::Release);
     }
 
+    /// Executes a single task.
     fn execute(&mut self, task: Arc<Task>) {
+
         if task
             .exec_state
             .state

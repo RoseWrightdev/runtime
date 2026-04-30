@@ -42,34 +42,37 @@ pub(crate) struct ExecutionState {
 
 /// The unit of execution in the Taiga runtime.
 /// 
-/// A `Task` wraps a future and its associated metadata, such as execution state,
-/// join state, and result storage. Tasks are designed to be recycled via [`Task::reuse`]
-/// to avoid the overhead of allocating new `Arc<Task>` objects for every spawn.
+/// A `Task` encapsulates a future, its execution state, and storage for its 
+/// eventual output. It provides the necessary metadata for the scheduler 
+/// to manage asynchronous execution across multiple threads.
+/// 
+/// ## Type Erasure and Memory Management
+/// 
+/// Since Rust futures are anonymous and uniquely typed, Taiga uses 
+/// **Type Erasure** (via [`RawFuture`]). This allows diverse future types 
+/// to be stored uniformly in task queues. Additionally, `Task` supports 
+/// **In-place Re-initialization** (Recycling), which bypasses heap allocation 
+/// by reusing the memory of completed tasks for new futures of compatible 
+/// layout.
 pub struct Task {
     /// The underlying future, type-erased via [`RawFuture`].
     pub(crate) future: UnsafeCell<RawFuture>,
     /// The scheduler responsible for this task.
     pub(crate) scheduler: Arc<Scheduler>,
-    /// Execution-related state (atomic).
+    /// Execution-related state (IDLE, SCHEDULED, or POLLING).
     pub(crate) exec_state: CachePadded<ExecutionState>,
-    /// Join-related state (atomic).
+    /// Join-related state (RUNNING, READY, or JOINED).
     pub(crate) join_state: CachePadded<AtomicU8>,
     /// Storage for the future's output or a panic error.
     /// 
-    /// This field uses **type erasure** (`dyn Any`) to allow the `Task` struct
-    /// to remain non-generic. This is critical for storing tasks in a common
-    /// scheduler queue regardless of their return type.
-    /// 
-    /// # Safety
-    /// 
-    /// Access is synchronized via `join_state`.
+    /// This uses `dyn Any` so it can store literally any return type.
     pub(crate) result: UnsafeCell<Option<Result<Box<dyn Any + Send>, JoinError>>>,
     /// The waker for a `JoinHandle` awaiting this task.
     pub(crate) join_waker: CachePadded<futures::task::AtomicWaker>,
 }
 
 impl Task {
-    /// Creates a new task.
+    /// Creates a new task from a future.
     pub(crate) fn new<F>(
         future: F,
         scheduler: Arc<Scheduler>,
@@ -93,15 +96,9 @@ impl Task {
 
     /// Re-initializes an existing task with a new future.
     /// 
-    /// This allows the runtime to recycle the `Arc<Task>` allocation and its 
-    /// associated atomic state, significantly reducing allocation overhead 
-    /// under high churn.
-    /// 
-    /// # Safety
-    /// 
-    /// The caller must ensure that the task is currently in the `IDLE` state 
-    /// and that the new future's memory layout is compatible with the 
-    /// task's existing allocation.
+    /// This is an optimization! Instead of throwing away the "Task" object and 
+    /// creating a new one (which involves memory allocation), we just wipe the 
+    /// old one clean and put a new future inside it.
     pub(crate) fn reuse<F>(arc_self: &Arc<Self>, future: F)
     where
         F: Future<Output = ()> + Send + 'static,
@@ -171,25 +168,25 @@ impl ArcWake for Task {
     }
 }
 
-/// A type-erased future.
+/// A type-erased future implementation.
 /// 
-/// `RawFuture` is the core of the runtime's **type erasure** strategy. It stores 
-/// a future on the heap and provides a manual vtable of function pointers 
-/// (`poll_fn`, `drop_fn`) to interact with it without knowing its original type `F`. 
+/// `RawFuture` enables heterogeneous futures to be managed via a stable ABI. 
+/// It stores a pointer to the future's state on the heap and utilizes 
+/// dynamic dispatch via function pointers for polling and destruction.
 /// 
-/// This allows the [`Task`] struct to be non-generic, which is required for:
-/// 1. Storing diverse tasks in the same scheduler queues.
-/// 2. Recycling `Task` allocations for different future types via [`Task::reuse`].
+/// This manual vtable approach provides maximum performance and allows for 
+/// the task recycling optimizations used throughout the runtime.
 pub struct RawFuture {
-    /// Pointer to the future's state on the heap (type-erased).
+    /// Pointer to the future's state on the heap.
     pub(crate) ptr: *mut u8,
-    /// The memory layout of the future's state.
+    /// The memory layout (size) of the future.
     pub(crate) layout: std::alloc::Layout,
-    /// Function pointer to poll the future (recovery of type `F` happens inside this fn).
+    /// Function pointer to "press the Run button" (Poll).
     pub(crate) poll_fn: unsafe fn(*mut u8, *mut Context<'_>) -> std::task::Poll<()>,
-    /// Function pointer to drop the future's state.
+    /// Function pointer to "press the Delete button" (Drop).
     pub(crate) drop_fn: unsafe fn(*mut u8),
 }
+
 
 impl RawFuture {
     /// Allocates and initializes a new `RawFuture`.

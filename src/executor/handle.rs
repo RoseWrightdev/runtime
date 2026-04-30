@@ -60,7 +60,7 @@ impl Handle {
 
     /// Registers a timer with the reactor.
     /// 
-    /// Similar to [`register_io`], registrations from worker threads are buffered 
+    /// Similar to [`Self::register_io`], registrations from worker threads are buffered 
     /// to improve performance.
     pub fn register_timer(&self, deadline: std::time::Instant, waker: std::task::Waker) {
         let registration = Registration::Timer { deadline, waker };

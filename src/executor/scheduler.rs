@@ -16,17 +16,27 @@ use crate::executor::context::CURRENT_TASK;
 
 /// The global coordinator for task distribution and resource recycling.
 /// 
-/// The `Scheduler` manages the lifecycle of all tasks in the runtime. It uses a
-/// multi-level scheduling strategy:
+/// The `Scheduler` coordinates the lifecycle of all tasks in the runtime, 
+/// providing load balancing and memory-efficient resource management.
 /// 
-/// 1.  **Global Injector**: A lock-free queue ([`Injector`][crossbeam::deque::Injector]) 
-///     for tasks spawned from outside the runtime or those that have been moved 
-///     to the global scope for fairness.
-/// 2.  **Work-Stealing**: Maintains references to worker-local stealers to allow 
-///     load balancing across threads.
-/// 3.  **Task Recycling**: Bucketized object pools ([`ArrayQueue`][crossbeam::queue::ArrayQueue]) 
-///     allow reusing `Arc<Task>` allocations, significantly reducing GC pressure 
-///     and allocator contention.
+/// ## Task Distribution Strategy
+/// 
+/// Taiga implements a multi-level task discovery hierarchy:
+/// 
+/// 1.  **LIFO Slot**: A single-task priority slot for tasks woken by the 
+///     current thread. This maximizes CPU cache locality.
+/// 2.  **Local Deque**: A per-worker lock-free deque for low-latency local 
+///     task management.
+/// 3.  **Work-Stealing**: A mechanism to migrate tasks from over-subscribed 
+///     local deques or the global injector queue to idle workers.
+/// 
+/// ## Resource Recycling
+/// 
+/// To minimize heap allocation overhead, Taiga utilizes **Object Pools** 
+/// (bucketized by memory layout). Upon task completion, `Arc<Task>` objects 
+/// are returned to these pools. Subsequent `spawn` operations prioritize 
+/// reusing these allocations, reducing allocator contention and pressure 
+/// on the memory subsystem.
 pub struct Scheduler {
     /// The global injector queue for tasks that don't have a specific worker affinity.
     pub(crate) queue: Arc<Injector<Arc<Task>>>,
@@ -45,7 +55,8 @@ pub struct Scheduler {
     pub(crate) shutdown: CachePadded<AtomicBool>,
     /// Bucketized task pools for zero-allocation recycling.
     /// 
-    /// Pools are indexed by the log2 of the task's size, starting at 32 bytes.
+    /// Pools are indexed by the size of the task. We have 11 buckets ranging 
+    /// from 32 bytes to 32 kilobytes.
     pub task_pools: [Arc<ArrayQueue<Arc<Task>>>; 11],
     /// Callback to wake the reactor if a worker is blocked polling I/O.
     pub(crate) reactor_notifier: Box<dyn Fn() + Send + Sync>,
@@ -73,14 +84,16 @@ impl Scheduler {
 
     /// Spawns a future onto the runtime and returns a [`JoinHandle`] to its result.
     /// 
-    /// This method wraps the provided future with panic protection and result 
-    /// reporting logic before passing it to the internal task allocator.
+    /// This method is responsible for taking your `async` block and turning it 
+    /// into a [`Task`] that the runtime can manage. It also handles panics 
+    /// gracefully so that one failing task doesn't crash the whole runtime.
     pub fn spawn<F, T>(self: &Arc<Self>, future: F) -> JoinHandle<T>
     where 
         F: Future<Output = T> + Send + 'static,
         T: Any + Send + 'static,
     {
         let wrapped_future = async move {
+            // We use AssertUnwindSafe to catch panics inside the task
             let res = std::panic::AssertUnwindSafe(future).catch_unwind().await;
             
             // Get our own task header to write the result
@@ -88,14 +101,14 @@ impl Scheduler {
                 c.borrow().clone().expect("Task executed outside of context")
             );
 
-            // Type-erased result storage
+            // Store the result (or the panic error) in the task's result slot
             let boxed_res = res.map(|val| Box::new(val) as Box<dyn Any + Send>);
             
             unsafe {
                 *task.result.get() = Some(boxed_res);
             }
 
-            // Mark a READY and wake joiner
+            // Signal that we are done and wake up anyone waiting on the JoinHandle
             task.join_state.store(crate::executor::task::JOIN_STATE_READY, Ordering::Release);
             task.join_waker.wake();
         };
@@ -104,12 +117,16 @@ impl Scheduler {
         JoinHandle::new(task)
     }
 
+    /// The internal heart of task creation.
+    /// 
+    /// This method first checks if there's a compatible task in the pools 
+    /// (recycling) before allocating a new one.
     fn spawn_internal_ref<F>(self: &Arc<Self>, future: F) -> Arc<Task>
     where F: Future<Output = ()> + Send + 'static
     {
         let layout = std::alloc::Layout::new::<F>();
         if let Some(idx) = Self::pool_index(layout) {
-            // 1. Try Thread-Local pool
+            // 1. Try Thread-Local pool (FASTEST, no sharing with other threads)
             let local_task = crate::executor::context::LOCAL_TASK_POOL.with(|p| {
                 p[idx].borrow_mut().pop()
             });
@@ -119,7 +136,7 @@ impl Scheduler {
                 return task;
             }
 
-            // 2. Fallback to Global pool
+            // 2. Fallback to Global pool (Shared with other threads)
             if let Some(task) = self.task_pools[idx].pop() {
                 Task::reuse(&task, future);
                 self.inject(task.clone());
@@ -127,6 +144,7 @@ impl Scheduler {
             }
         }
         
+        // 3. If no poolable task found, create a new one from scratch
         let pooled_layout = if let Some(idx) = Self::pool_index(layout) {
              Some(std::alloc::Layout::from_size_align(32 << idx, 16).unwrap())
         } else {
@@ -147,11 +165,9 @@ impl Scheduler {
 
     /// Signals that new work is available.
     /// 
-    /// To prevent excessive context switching, this method only notifies a 
-    /// worker if fewer than two workers are currently searching for work.
+    /// To avoid wasting energy, we only wake up workers if they are actually 
+    /// needed. We try to keep a small number of workers "searching" for work.
     pub(crate) fn notify(&self) {
-        // Relaxed threshold: Allow unparking if searching workers < 2.
-        // This prevents the "single searcher" bottleneck during high-load bursts.
         if self.searching_workers.load(Ordering::Acquire) < 2 {
             let num_unparkers = self.unparkers.len();
             if num_unparkers > 0 {
@@ -168,10 +184,9 @@ impl Scheduler {
         self.queue.steal()
     }
 
-    /// Maps a memory layout to a specific size-bucket in the task pool.
+    /// Maps a memory layout (size/alignment) to a specific bucket in our pool.
     /// 
-    /// Buckets cover powers of two from 32B (Index 0) to 32KB (Index 10).
-    /// Returns `None` if the layout exceeds the maximum poolable size or alignment.
+    /// We use power-of-two buckets (32B, 64B, 128B... up to 32KB).
     pub(crate) fn pool_index(layout: std::alloc::Layout) -> Option<usize> {
         if layout.align() > 16 || layout.size() > 32768 {
             return None;
@@ -183,6 +198,7 @@ impl Scheduler {
         Some((size.trailing_zeros() as usize) - 5)
     }
 }
+
 
 #[cfg(test)]
 mod tests {

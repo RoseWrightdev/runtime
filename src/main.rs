@@ -6,8 +6,13 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener as TokioListener, TcpStream as TokioStream};
 use std::os::unix::io::{AsRawFd, FromRawFd};
 
+/// The entry point for the Taiga Benchmark tool.
+/// 
+/// This tool compares the performance of the Taiga Runtime against Tokio 
+/// (the industry standard) using a simple TCP echo server benchmark.
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    // --help handling omitted for brevity in comments --
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         println!("Taiga Runtime Benchmark");
         println!("\nUsage: cargo run --release -- [concurrency] [total_messages] [payload_size] [--runs N]");
@@ -39,6 +44,8 @@ fn main() {
     let mut custom_run_results = Vec::new();
     let mut tokio_run_results = Vec::new();
 
+    // We run the benchmark multiple times and take the median to ensure 
+    // that temporary system spikes don't skew the results.
     for i in 1..=runs {
         if runs > 1 {
             println!("\x1b[1;36m▶️ Run {}/{}\x1b[0m", i, runs);
@@ -70,6 +77,7 @@ fn main() {
     print_results_table(custom_results, tokio_results);
 }
 
+/// Stores the statistical results of a benchmark run.
 #[derive(Clone, Copy)]
 struct BenchResults {
     duration: Duration,
@@ -82,6 +90,7 @@ struct BenchResults {
     max: u64,
 }
 
+/// Calculates the median values from a series of benchmark runs.
 fn aggregate_median(mut results: Vec<BenchResults>) -> BenchResults {
     if results.is_empty() {
         panic!("No results to aggregate");
@@ -131,7 +140,9 @@ fn aggregate_median(mut results: Vec<BenchResults>) -> BenchResults {
     }
 }
 
+/// Executes the benchmark using the custom Taiga Runtime.
 fn run_custom_benchmark(concurrency: usize, total_messages: usize, payload_size: usize) -> BenchResults {
+
     let rt = runtime::Runtime::new();
     let start = Instant::now();
     let mut total_hist = Histogram::<u64>::new_with_bounds(1, 10_000_000_000, 3).unwrap();

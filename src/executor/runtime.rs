@@ -9,8 +9,16 @@ use crate::executor::{Handle, Reactor, Scheduler, Worker, join_handle};
 
 /// The Taiga asynchronous runtime.
 /// 
-/// The `Runtime` manages a thread pool of workers, a scheduler, and a reactor.
-/// It provides the entry point for spawning and executing asynchronous tasks.
+/// The `Runtime` is the top-level container for all the pieces that make 
+/// async Rust work. When you create a `Runtime`, it:
+/// 
+/// 1.  Detects how many CPU cores your computer has.
+/// 2.  Creates a [`Scheduler`] to manage tasks.
+/// 3.  Creates a [`Reactor`] to handle networking and timers.
+/// 4.  Starts several "Worker Threads" (one per core).
+/// 
+/// Once the `Runtime` is dropped (goes out of scope), it automatically signals 
+/// all workers to stop and waits for them to finish, ensuring a clean exit.
 pub struct Runtime {
     handle: Handle,
     workers: Vec<std::thread::JoinHandle<()>>,
@@ -19,15 +27,19 @@ pub struct Runtime {
 impl Runtime {
     /// Creates a new runtime with one worker thread per CPU core.
     /// 
-    /// This also initializes a global panic hook that ensures panics within 
-    /// the runtime context are handled correctly.
+    /// This method initializes the multi-threaded executor by:
+    /// 1. Setting up a panic hook to handle task failures gracefully.
+    /// 2. Creating a pool of worker threads, each with its own local LIFO/FIFO queue.
+    /// 3. Initializing the [`Reactor`] for non-blocking I/O and timers.
+    /// 4. Bootstrapping the [`Scheduler`] with work-stealing capabilities and thread unparkers.
+    /// 5. Spawning OS threads to drive the background worker loops.
     pub fn new() -> Self {
+        // Ensure the global panic hook is configured only once across all runtime instances.
+        // This preserves the default panic behavior while allowing the runtime to 
+        // handle worker thread panics uniformly.
         INIT_PANIC_HOOK.call_once(|| {
             let default_hook = std::panic::take_hook();
             std::panic::set_hook(Box::new(move |info| {
-                // We always call the default hook to ensure panics are reported.
-                // In the future, we could enrich this with runtime-specific info
-                // if crate::executor::context::is_in_context() is true.
                 default_hook(info);
             }));
         });
@@ -38,6 +50,7 @@ impl Runtime {
         let mut unparkers = Vec::with_capacity(num_workers);
         let mut parkers = Vec::with_capacity(num_workers);
 
+        // Prepare thread-local resources for each worker.
         for _ in 0..num_workers {
             let worker = crossbeam::deque::Worker::new_fifo();
             let parker = Parker::new();
@@ -47,6 +60,7 @@ impl Runtime {
             parkers.push(parker);
         }
 
+        // Initialize core runtime components.
         let reactor = Arc::new(Reactor::new());
         let reactor_clone = reactor.clone();
         
@@ -58,6 +72,7 @@ impl Runtime {
         
         let handle = Handle::new(scheduler, reactor);
 
+        // Spawn OS threads to drive the background worker loops.
         let mut workers = Vec::with_capacity(num_workers);
         for (i, (queue, parker)) in local_queues.into_iter().zip(parkers).enumerate() {
             let h = handle.clone();
@@ -73,11 +88,11 @@ impl Runtime {
         }
     }
 
-    /// Spawns a future onto the runtime's thread pool.
+    /// Spawns a future onto the runtime's execution pool.
     /// 
-    /// This method erases the specific type of the future to allow it to be 
-    /// managed by the scheduler, returning a [`JoinHandle`] that "remembers" 
-    /// the return type `T` for safe recovery.
+    /// This method submits a future to the scheduler for background execution. 
+    /// It returns a [`join_handle::JoinHandle`], which allows for awaiting the 
+    /// task's completion and retrieving its output.
     pub fn spawn<F, T>(&self, future: F) -> join_handle::JoinHandle<T>
     where
         F: Future<Output = T> + Send + 'static,
@@ -86,11 +101,11 @@ impl Runtime {
         self.handle.scheduler.spawn(future)
     }
 
-    /// Runs a future to completion on the current thread.
+    /// Runs a future to completion on the current thread, blocking it.
     /// 
-    /// This function blocks the current thread until the future has finished 
-    /// executing. It enters the runtime context so that the future can access 
-    /// runtime features like spawning or I/O.
+    /// While `spawn` runs code in the background, `block_on` waits right here 
+    /// until the future is done. This is usually used to "start" your async 
+    /// application from a non-async `main` function.
     pub fn block_on<F>(&self, future: F) -> F::Output
     where
         F: Future + Send + 'static,
@@ -105,6 +120,7 @@ impl Runtime {
         rx.recv().expect("Runtime internal channel closed")
     }
 }
+
 
 impl Drop for Runtime {
     fn drop(&mut self) {

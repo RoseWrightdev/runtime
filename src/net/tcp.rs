@@ -11,12 +11,25 @@ use polling::Event;
 use socket2::{Domain, Type, Socket};
 use libc;
 
+/// An asynchronous TCP socket listener.
+/// 
+/// `AsyncTcpListener` provides a non-blocking interface for accepting incoming 
+/// network connections, integrating with the system's [`Reactor`][crate::executor::Reactor].
 pub struct AsyncTcpListener {
     inner: TcpListener,
     reactor: Arc<crate::executor::Reactor>,
 }
 
 impl AsyncTcpListener {
+    /// Creates a new TCP listener bound to the specified address.
+    /// 
+    /// This method:
+    /// 1. Binds the listener to the provided socket address.
+    /// 2. Configures the underlying socket for **non-blocking operation**, ensuring 
+    ///    that I/O operations return `ErrorKind::WouldBlock` instead of stalling 
+    ///    the execution thread.
+    /// 3. Registers the file descriptor with the [`Reactor`][crate::executor::Reactor] 
+    ///    to enable asynchronous event notifications.
     pub fn bind<A: ToSocketAddrs>(addr: A) -> io::Result<Self> {
         let inner = TcpListener::bind(addr)?;
         inner.set_nonblocking(true)?;
