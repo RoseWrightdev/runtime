@@ -15,6 +15,7 @@ use futures::task::ArcWake;
 
 use crate::executor::scheduler::Scheduler;
 use crate::executor::join_handle::JoinError;
+use crate::executor::context;
 
 /// Task is idle and not currently in any queue.
 pub(crate) const STATE_IDLE: u8 = 0;
@@ -135,12 +136,12 @@ impl ArcWake for Task {
             // This prevents "lost wakeups" where a task is stuck in a non-worker thread's LIFO slot.
             let mut pushed = false;
 
-            if crate::executor::context::IS_WORKER.with(|w| w.get()) {
+            if context::IS_WORKER.get() {
                 // 1. Try LIFO slot (highest priority)
                 // If the task has been woken more than 3 times consecutively into the LIFO slot,
                 // bypass the slot and push it to the local deque to ensure other tasks aren't starved.
                 if arc_self.exec_state.lifo_count.load(Ordering::Relaxed) < 3 {
-                    pushed = crate::executor::context::LIFO_SLOT.with(|slot| {
+                    pushed = context::LIFO_SLOT.with(|slot| {
                         let mut slot = slot.borrow_mut();
                         if slot.is_none() {
                             *slot = Some(arc_self.clone());
@@ -155,7 +156,7 @@ impl ArcWake for Task {
                     arc_self.exec_state.lifo_count.fetch_add(1, Ordering::Relaxed);
                 } else {
                     // 2. If LIFO is full or bypassed, try Local Queue (ZERO-OVERHEAD path)
-                    let local_q_ptr = crate::executor::context::LOCAL_QUEUE_PTR.with(|q| q.get());
+                    let local_q_ptr = context::LOCAL_QUEUE_PTR.get();
                     if !local_q_ptr.is_null() {
                         // SAFETY: `LOCAL_QUEUE_PTR` is only set on worker threads 
                         // and points to a valid `deque::Worker` owned by that thread.
