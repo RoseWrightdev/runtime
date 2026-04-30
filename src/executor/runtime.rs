@@ -27,7 +27,7 @@ pub struct Runtime {
 impl Runtime {
     /// Creates a new runtime with one worker thread per CPU core.
     /// 
-    /// This method initializes the multi-threaded executor by:
+    /// This method initializes the multithreaded executor by:
     /// 1. Setting up a panic hook to handle task failures gracefully.
     /// 2. Creating a pool of worker threads, each with its own local LIFO/FIFO queue.
     /// 3. Initializing the [`Reactor`] for non-blocking I/O and timers.
