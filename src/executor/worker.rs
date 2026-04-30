@@ -75,7 +75,7 @@ impl Worker {
 
         // Use RAW POINTER for zero-overhead local queue access
         let mut queue = self.queue.take().expect("Worker started without a queue");
-        context::LOCAL_QUEUE_PTR.with(|q| q.set(&mut queue as *mut _));
+        context::LOCAL_QUEUE_PTR.set(&mut queue as *mut _);
 
         loop {
             // Check if the whole runtime is shutting down
@@ -97,7 +97,7 @@ impl Worker {
         }
 
         // Cleanup raw pointer on exit and restore the queue
-        context::LOCAL_QUEUE_PTR.with(|q| q.set(std::ptr::null_mut()));
+        context::LOCAL_QUEUE_PTR.set(std::ptr::null_mut());
         self.queue = Some(queue);
     }
 

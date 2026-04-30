@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::any::Any;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::alloc::Layout;
 
 use crossbeam::deque::{Injector, Stealer};
 use crossbeam::queue::ArrayQueue;
@@ -12,7 +13,7 @@ use futures::FutureExt;
 
 use crate::executor::Task;
 use crate::executor::join_handle::JoinHandle;
-use crate::executor::context::CURRENT_TASK;
+use crate::executor::context::{CURRENT_TASK, LOCAL_TASK_POOL};
 
 /// The global coordinator for task distribution and resource recycling.
 /// 
@@ -127,10 +128,10 @@ impl Scheduler {
     fn spawn_internal_ref<F>(self: &Arc<Self>, future: F) -> Arc<Task>
     where F: Future<Output = ()> + Send + 'static
     {
-        let layout = std::alloc::Layout::new::<F>();
+        let layout = Layout::new::<F>();
         if let Some(idx) = Self::pool_index(layout) {
             // 1. Try Thread-Local pool (FASTEST, no sharing with other threads)
-            let local_task = crate::executor::context::LOCAL_TASK_POOL.with(|p| {
+            let local_task = LOCAL_TASK_POOL.with(|p| {
                 p[idx].borrow_mut().pop()
             });
             if let Some(task) = local_task {
@@ -149,7 +150,7 @@ impl Scheduler {
         
         // 3. If no poolable task found, create a new one from scratch
         let pooled_layout = if let Some(idx) = Self::pool_index(layout) {
-             Some(std::alloc::Layout::from_size_align(32 << idx, 16).unwrap())
+             Some(Layout::from_size_align(32 << idx, 16).unwrap())
         } else {
              None
         };
@@ -190,7 +191,7 @@ impl Scheduler {
     /// Maps a memory layout (size/alignment) to a specific bucket in our pool.
     /// 
     /// We use power-of-two buckets (32B, 64B, 128B... up to 32KB).
-    pub(crate) fn pool_index(layout: std::alloc::Layout) -> Option<usize> {
+    pub(crate) fn pool_index(layout: Layout) -> Option<usize> {
         if layout.align() > 16 || layout.size() > 32768 {
             return None;
         }
@@ -210,12 +211,12 @@ mod tests {
 
     #[test]
     fn test_pool_index() {
-        assert_eq!(Scheduler::pool_index(std::alloc::Layout::new::<[u8; 0]>()), None);
-        assert_eq!(Scheduler::pool_index(std::alloc::Layout::new::<[u8; 32]>()), Some(0));
-        assert_eq!(Scheduler::pool_index(std::alloc::Layout::new::<[u8; 64]>()), Some(1));
-        assert_eq!(Scheduler::pool_index(std::alloc::Layout::new::<[u8; 32768]>()), Some(10));
-        assert_eq!(Scheduler::pool_index(std::alloc::Layout::new::<[u8; 32769]>()), None);
-        assert_eq!(Scheduler::pool_index(std::alloc::Layout::from_size_align(32, 32).unwrap()), None);
+        assert_eq!(Scheduler::pool_index(Layout::new::<[u8; 0]>()), None);
+        assert_eq!(Scheduler::pool_index(Layout::new::<[u8; 32]>()), Some(0));
+        assert_eq!(Scheduler::pool_index(Layout::new::<[u8; 64]>()), Some(1));
+        assert_eq!(Scheduler::pool_index(Layout::new::<[u8; 32768]>()), Some(10));
+        assert_eq!(Scheduler::pool_index(Layout::new::<[u8; 32769]>()), None);
+        assert_eq!(Scheduler::pool_index(Layout::from_size_align(32, 32).unwrap()), None);
     }
 
     #[test]
@@ -281,7 +282,7 @@ mod tests {
         assert!(matches!(scheduler.steal(), crossbeam_deque::Steal::Success(_)));
 
         // 2. Reuse via LOCAL_TASK_POOL
-        let layout = std::alloc::Layout::new::<[u8; 32]>();
+        let layout = Layout::new::<[u8; 32]>();
         let idx = Scheduler::pool_index(layout).unwrap();
         
         let dummy_task = Task::new(async {}, scheduler.clone(), Some(layout));
@@ -305,15 +306,15 @@ mod tests {
     #[test]
     fn test_pool_index_boundaries() {
         // Alignment > 16 should return None
-        assert_eq!(Scheduler::pool_index(std::alloc::Layout::from_size_align(32, 32).unwrap()), None);
+        assert_eq!(Scheduler::pool_index(Layout::from_size_align(32, 32).unwrap()), None);
         // Size > 32768 should return None
-        assert_eq!(Scheduler::pool_index(std::alloc::Layout::from_size_align(32769, 16).unwrap()), None);
+        assert_eq!(Scheduler::pool_index(Layout::from_size_align(32769, 16).unwrap()), None);
         
         // Powers of two mapping
-        assert_eq!(Scheduler::pool_index(std::alloc::Layout::new::<[u8; 32]>()), Some(0)); // 32
-        assert_eq!(Scheduler::pool_index(std::alloc::Layout::new::<[u8; 33]>()), Some(1)); // 64
-        assert_eq!(Scheduler::pool_index(std::alloc::Layout::new::<[u8; 64]>()), Some(1));
-        assert_eq!(Scheduler::pool_index(std::alloc::Layout::new::<[u8; 65]>()), Some(2)); // 128
+        assert_eq!(Scheduler::pool_index(Layout::new::<[u8; 32]>()), Some(0)); // 32
+        assert_eq!(Scheduler::pool_index(Layout::new::<[u8; 33]>()), Some(1)); // 64
+        assert_eq!(Scheduler::pool_index(Layout::new::<[u8; 64]>()), Some(1));
+        assert_eq!(Scheduler::pool_index(Layout::new::<[u8; 65]>()), Some(2)); // 128
     }
 
     #[test]
