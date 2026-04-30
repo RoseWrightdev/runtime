@@ -38,6 +38,10 @@ impl AsyncTcpListener {
         handle.reactor.add(&inner, Event::none(inner.as_raw_fd() as usize));
         
         // Set SO_LINGER(0) for benchmark efficiency
+        // SAFETY: `inner.as_raw_fd()` provides a valid file descriptor owned by `inner`.
+        // We wrap it in a `socket2::Socket` to set options, then immediately `forget` 
+        // the wrapper to ensure the original `inner` (TcpListener) remains the sole 
+        // owner and avoids a double-close.
         let socket = unsafe { socket2::Socket::from_raw_fd(inner.as_raw_fd()) };
         let _ = socket.set_linger(Some(std::time::Duration::ZERO));
         std::mem::forget(socket);

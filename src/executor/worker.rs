@@ -44,6 +44,8 @@ pub struct Worker {
 
 #[inline(always)]
 fn prefetch<T>(ptr: *const T) {
+    // SAFETY: The assembly instructions used here are non-destructive 
+    // prefetch hints and do not affect the architectural state of the CPU.
     unsafe {
         #[cfg(target_arch = "aarch64")]
         core::arch::asm!("prfm pldl1keep, [{}]", in(reg) ptr, options(nostack, preserves_flags, nomem));
@@ -237,6 +239,8 @@ impl Worker {
             let mut cx = Context::from_waker(&waker);
 
             // Transition from SCHEDULED to POLLING.
+            // SAFETY: We have successfully transitioned the task state to POLLING, 
+            // giving us exclusive access to the future's internal state.
             let future = unsafe { &mut *task.future.get() };
 
             // Decrement budget upon execution
@@ -245,11 +249,15 @@ impl Worker {
             // Register this as the current task to allow self-referencing (for JoinHandle result writing)
             context::CURRENT_TASK.with(|c| *c.borrow_mut() = Some(task.clone()));
 
+            // SAFETY: `poll_fn` is a valid function pointer to the future's 
+            // poll implementation, and `ptr` is a valid pointer to its state.
             let poll_result = unsafe { (future.poll_fn)(future.ptr, &mut cx) };
 
             context::CURRENT_TASK.with(|c| *c.borrow_mut() = None);
 
             if let std::task::Poll::Ready(_) = poll_result {
+                // SAFETY: The future has completed, so we can safely drop it. 
+                // We reset the function pointers to prevent double-dropping.
                 unsafe {
                     (future.drop_fn)(future.ptr);
                     future.drop_fn = |_| {};
@@ -282,6 +290,8 @@ impl Worker {
     fn recycle_task(&self, task: Arc<Task>) {
         // Recycle task via Thread-Local Pool first (ZERO contention)
         if Arc::strong_count(&task) == 1 {
+            // SAFETY: We are the sole owner of the task (strong_count == 1), 
+            // so we can safely access its internal layout.
             let layout = unsafe { (*task.future.get()).layout };
             if let Some(idx) = Scheduler::pool_index(layout) {
                 context::LOCAL_TASK_POOL.with(|p| {
@@ -312,6 +322,9 @@ impl Worker {
         if local_queue_ptr.is_null() {
             return None;
         }
+        // SAFETY: `local_queue_ptr` is retrieved from `LOCAL_QUEUE_PTR`, 
+        // which is only set on worker threads and points to a valid 
+        // `deque::Worker` owned by the current thread.
         let local_q = unsafe { &mut *local_queue_ptr };
 
         let start = self.fast_rng() as usize;

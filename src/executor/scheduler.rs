@@ -104,6 +104,9 @@ impl Scheduler {
             // Store the result (or the panic error) in the task's result slot
             let boxed_res = res.map(|val| Box::new(val) as Box<dyn Any + Send>);
             
+            // SAFETY: We are currently executing on the task's thread and have 
+            // exclusive access to the task's internal state during the final 
+            // stage of its execution.
             unsafe {
                 *task.result.get() = Some(boxed_res);
             }

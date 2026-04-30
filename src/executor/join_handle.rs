@@ -46,6 +46,9 @@ impl<T: Any + Send + 'static> Future for JoinHandle<T> {
             Ordering::Acquire,
         ).is_ok() {
             // Success! The result is now owned by us.
+            // SAFETY: We have successfully transitioned the task state from READY 
+            // to JOINED using an atomic compare-exchange, ensuring we have 
+            // exclusive ownership of the result.
             let result = unsafe { &mut *self.task.result.get() }.take().unwrap();
             return Poll::Ready(result.map(|val| {
                 *val.downcast::<T>().expect("JoinHandle type mismatch")

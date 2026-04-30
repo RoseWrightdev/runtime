@@ -103,6 +103,9 @@ impl Task {
     where
         F: Future<Output = ()> + Send + 'static,
     {
+        // SAFETY: We have unique access to the task's internal state because 
+        // the task has completed (or is being initialized) and we are the 
+        // sole owners of the Arc or have verified the task state is IDLE.
         unsafe {
             let raw = &mut *arc_self.future.get();
             raw.recondition(future);
@@ -115,10 +118,17 @@ impl Task {
     }
 }
 
+// SAFETY: `Task` handles its own internal synchronization via atomics 
+// and `UnsafeCell` access is guarded by the `exec_state` (IDLE, SCHEDULED, POLLING).
 unsafe impl Sync for Task {}
+// SAFETY: `Task` is designed to be moved between threads by the scheduler.
 unsafe impl Send for Task {}
 
 impl ArcWake for Task {
+    fn wake(self: Arc<Self>) {
+        Self::wake_by_ref(&self)
+    }
+
     fn wake_by_ref(arc_self: &Arc<Self>) {
         if arc_self.exec_state.state.swap(STATE_SCHEDULED, Ordering::AcqRel) == STATE_IDLE {
             // Only use the LIFO slot if we are on a worker thread that will check it.
@@ -147,6 +157,8 @@ impl ArcWake for Task {
                     // 2. If LIFO is full or bypassed, try Local Queue (ZERO-OVERHEAD path)
                     let local_q_ptr = crate::executor::context::LOCAL_QUEUE_PTR.with(|q| q.get());
                     if !local_q_ptr.is_null() {
+                        // SAFETY: `LOCAL_QUEUE_PTR` is only set on worker threads 
+                        // and points to a valid `deque::Worker` owned by that thread.
                         unsafe {
                             (&mut *local_q_ptr).push(arc_self.clone());
                         }
@@ -161,10 +173,6 @@ impl ArcWake for Task {
                 arc_self.exec_state.lifo_count.store(0, Ordering::Relaxed);
             }
         }
-    }
-
-    fn wake(self: Arc<Self>) {
-        Self::wake_by_ref(&self)
     }
 }
 
@@ -198,6 +206,7 @@ impl RawFuture {
         let ptr = if layout.size() == 0 {
             layout.align() as *mut u8
         } else {
+            // SAFETY: `layout` is a valid `std::alloc::Layout` for type `F`.
             let p = unsafe { std::alloc::alloc(layout) };
             if p.is_null() {
                 std::alloc::handle_alloc_error(layout);
@@ -205,6 +214,8 @@ impl RawFuture {
             p
         };
 
+        // SAFETY: `ptr` points to a newly allocated (or ZST) block of memory 
+        // with sufficient size and alignment for `F`.
         unsafe {
             ptr::write(ptr as *mut F, future);
         }
@@ -219,12 +230,19 @@ impl RawFuture {
 
     /// Safely re-initialize an existing RawFuture with a new Future state.
     /// This bypasses the standard allocator and overwrites the existing memory block.
+    /// 
+    /// # Safety
+    /// 
+    /// The caller must ensure:
+    /// 1. `self.layout` is large enough and has sufficient alignment for `F`.
+    /// 2. The previous future in `self.ptr` has been dropped.
     pub unsafe fn recondition<F>(&mut self, future: F)
     where
         F: Future<Output = ()> + Send + 'static,
     {
-        // Safety: We must ensure self.layout is large enough for std::alloc::Layout::new::<F>().
-        // The runtime verifies this by checking the pool_index bucket before reuse.
+        // SAFETY: The runtime verifies layout compatibility by checking 
+        // the pool_index bucket before reuse. The caller ensures the 
+        // previous future was dropped (e.g., in `Worker::execute`).
         unsafe {
             ptr::write(self.ptr as *mut F, future);
         }
@@ -232,17 +250,30 @@ impl RawFuture {
         self.drop_fn = Self::drop_future::<F>;
     }
 
+    /// # Safety
+    /// 
+    /// `ptr` must point to a valid instance of `F`. `cx` must be a valid 
+    /// pointer to a `Context`.
     #[inline(always)]
     unsafe fn poll<F: Future<Output = ()>>(
         ptr: *mut u8,
         cx: *mut Context<'_>,
     ) -> std::task::Poll<()> {
+        // SAFETY: The caller ensures `ptr` is a valid pointer to `F` 
+        // and that it is not currently being accessed elsewhere.
         let future = unsafe { &mut *(ptr as *mut F) };
+        // SAFETY: Pinning is safe here as the future's memory location 
+        // in `RawFuture` is stable until dropped.
         unsafe { std::pin::Pin::new_unchecked(future).poll(&mut *cx) }
     }
 
+    /// # Safety
+    /// 
+    /// `ptr` must point to a valid instance of `F`.
     #[inline(always)]
     unsafe fn drop_future<F>(ptr: *mut u8) {
+        // SAFETY: The caller ensures `ptr` points to a valid `F` 
+        // and that it will not be used after this call.
         unsafe { ptr::drop_in_place(ptr as *mut F) };
     }
 }
@@ -250,6 +281,9 @@ impl RawFuture {
 impl Drop for RawFuture {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
+            // SAFETY: `self.ptr` is a valid pointer to the future's state 
+            // allocated in `RawFuture::new`. `drop_fn` is the correct 
+            // destructor for the underlying type.
             unsafe {
                 (self.drop_fn)(self.ptr);
                 if self.layout.size() > 0 {

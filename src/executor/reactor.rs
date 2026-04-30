@@ -105,6 +105,8 @@ impl Reactor {
 
     /// Register a file descriptor with the poller.
     pub(crate) fn add(&self, source: impl AsSource + AsRawSource, event: Event) {
+        // SAFETY: The caller must ensure that the source's file descriptor 
+        // remains valid for the duration of the registration.
         unsafe {
             self.poller.add(source, event).expect("Failed to add source to poller");
         }
@@ -243,6 +245,9 @@ impl Reactor {
                             let mut interest = Event::none(key);
                             interest.readable = slot.0.is_some();
                             interest.writable = slot.1.is_some();
+                            // SAFETY: `key` is a valid file descriptor that was previously 
+                            // registered with the poller. `borrow_raw` is used to create 
+                            // a temporary reference for the duration of the `modify` call.
                             unsafe {
                                 let fd = std::os::unix::io::BorrowedFd::borrow_raw(key as std::os::unix::io::RawFd);
                                 let _ = self.poller.modify(fd, interest);
