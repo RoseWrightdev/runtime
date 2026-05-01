@@ -44,6 +44,11 @@ thread_local! {
     ]};
 
     /// Thread-local buffer for batched reactor registrations.
+    /// 
+    /// To avoid the overhead of acquiring the reactor's lock for every single 
+    /// I/O or timer request, workers buffer their registrations here. The 
+    /// buffer is flushed to the global reactor queue only when the worker 
+    /// finishes its current task or prepares to park (go to sleep).
     pub(crate) static REGISTRATION_BUFFER: RefCell<Vec<Registration>> = const { RefCell::new(Vec::new()) };
 }
 
