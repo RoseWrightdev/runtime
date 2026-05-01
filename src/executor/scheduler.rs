@@ -236,7 +236,7 @@ mod tests {
         scheduler.inject(task.clone());
         let stolen = scheduler.steal();
         match stolen {
-            crossbeam_deque::Steal::Success(t) => assert_eq!(Arc::as_ptr(&t), Arc::as_ptr(&task)),
+            Steal::Success(t) => assert_eq!(Arc::as_ptr(&t), Arc::as_ptr(&task)),
             _ => panic!("Failed to steal task"),
         }
     }
