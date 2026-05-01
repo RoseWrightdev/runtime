@@ -43,19 +43,7 @@ impl Handle {
     /// reactor in batches (every 16 registrations) to reduce cross-thread contention.
     pub fn register_io(&self, key: usize, waker: std::task::Waker, read: bool, write: bool) {
         let registration = Registration::IO { key, waker, read, write };
-
-        if context::IS_WORKER.with(|w| w.get()) {
-            context::REGISTRATION_BUFFER.with(|buf| {
-                let mut b = buf.borrow_mut();
-                b.push(registration);
-                if b.len() >= 16 {
-                    let batch = std::mem::replace(&mut *b, Vec::with_capacity(16));
-                    self.reactor.push_batch(batch);
-                }
-            });
-        } else {
-            self.reactor.push_batch(vec![registration]);
-        }
+        self.registration_helper(registration)
     }
 
     /// Registers a timer with the reactor.
@@ -64,8 +52,11 @@ impl Handle {
     /// to improve performance.
     pub fn register_timer(&self, deadline: std::time::Instant, waker: std::task::Waker) {
         let registration = Registration::Timer { deadline, waker };
+        self.registration_helper(registration)
+    }
 
-        if context::IS_WORKER.with(|w| w.get()) {
+    fn registration_helper(&self, registration: Registration) {
+        if context::IS_WORKER.get() {
             context::REGISTRATION_BUFFER.with(|buf| {
                 let mut b = buf.borrow_mut();
                 b.push(registration);
@@ -84,7 +75,7 @@ impl Handle {
     /// This should be called by workers before they go to sleep to ensure all 
     /// pending events are submitted for polling.
     pub(crate) fn flush_registrations(&self) {
-        if context::IS_WORKER.with(|w| w.get()) {
+        if context::IS_WORKER.get() {
             context::REGISTRATION_BUFFER.with(|buf| {
                 let mut b = buf.borrow_mut();
                 if !b.is_empty() {
