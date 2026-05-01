@@ -39,6 +39,8 @@ fn test_work_stealing() {
         for _ in 0..num_tasks {
             let c = c_clone.clone();
             handles.push(spawn(async move {
+                // Use SeqCst in tests to ensure absolute consistency and 
+                // visibility when verifying the final counter value.
                 c.fetch_add(1, Ordering::SeqCst);
             }));
         }
@@ -48,6 +50,7 @@ fn test_work_stealing() {
         }
     });
     
+    // Ensure all increments are visible before asserting.
     assert_eq!(counter.load(Ordering::SeqCst), num_tasks);
 }
 
@@ -89,6 +92,7 @@ fn test_panic_hook_delegation() {
     // Set a custom hook that we expect to be called
     let default_hook = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
+        // SeqCst ensures the flag is visible to the main thread.
         called_clone.store(true, Ordering::SeqCst);
         default_hook(info);
     }));
@@ -106,6 +110,7 @@ fn test_panic_hook_delegation() {
     // Clean up hook
     let _ = panic::take_hook();
 
+    // Use SeqCst to ensure we see the write from the panic hook.
     assert!(called.load(Ordering::SeqCst), "Panic hook was not called!");
 }
 

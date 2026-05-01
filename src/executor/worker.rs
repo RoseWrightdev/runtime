@@ -78,7 +78,8 @@ impl Worker {
         context::LOCAL_QUEUE_PTR.set(&mut queue as *mut _);
 
         loop {
-            // Check if the whole runtime is shutting down
+            // Check if the whole runtime is shutting down.
+            // Acquire ensures we see the latest shutdown state.
             if self.handle.scheduler.shutdown.load(Ordering::Acquire) {
                 break;
             }
@@ -145,7 +146,9 @@ impl Worker {
 
     /// The "Work-Stealing" and "Parking" logic.
     fn search_and_park(&mut self) {
-        // 1. Try to steal from other workers or the global queue
+        // 1. Try to steal from other workers or the global queue.
+        // We use Relaxed for searching_workers as it's a heuristic counter 
+        // used for throttling notifications, not for memory safety.
         self.handle.scheduler.searching_workers.fetch_add(1, Ordering::Relaxed);
         if let Some(task) = self.steal() {
             prefetch(Arc::as_ptr(&task));
@@ -186,6 +189,7 @@ impl Worker {
 
         // One final attempt to steal from the global injector if searching count is low.
         // This mitigates the "last searcher" race where a task is injected just as we park.
+        // Acquire ensures we see the most recent worker states.
         if self
             .handle
             .scheduler
@@ -200,6 +204,8 @@ impl Worker {
             }
         }
 
+        // We use Release when adding to sleeping_workers to ensure any 
+        // local state changes are visible if another thread notifies us.
         self.handle.scheduler.sleeping_workers.fetch_add(1, Ordering::Release);
 
         // Send any pending networking/timer requests to the Reactor
@@ -222,6 +228,10 @@ impl Worker {
     /// Executes a single task.
     fn execute(&mut self, task: Arc<Task>) {
 
+        // Attempt to transition the task from SCHEDULED to POLLING.
+        // - AcqRel: Ensure we see previous writes to the task (Acquire) and 
+        //   our state change is visible to others (Release).
+        // - Acquire: On failure, ensure we see the updated state.
         if task
             .exec_state
             .state
@@ -266,7 +276,8 @@ impl Worker {
 
                 self.recycle_task(task);
             } else {
-                // Return to IDLE, unless a wake occurred (state is now SCHEDULED)
+                // Return to IDLE, unless a wake occurred (state is now SCHEDULED).
+                // Use AcqRel to ensure the state transition is synchronized.
                 if task
                     .exec_state
                     .state

@@ -112,7 +112,10 @@ impl Scheduler {
                 *task.result.get() = Some(boxed_res);
             }
 
-            // Signal that we are done and wake up anyone waiting on the JoinHandle
+            // Signal that we are done and wake up anyone waiting on the JoinHandle.
+            // Release ordering ensures that the results written to `task.result` 
+            // above are visible to any thread that performs an Acquire load 
+            // of the join_state.
             task.join_state.store(crate::executor::task::JOIN_STATE_READY, Ordering::Release);
             task.join_waker.wake();
         };
@@ -172,9 +175,13 @@ impl Scheduler {
     /// To avoid wasting energy, we only wake up workers if they are actually 
     /// needed. We try to keep a small number of workers "searching" for work.
     pub(crate) fn notify(&self) {
+        // Use Acquire to check the number of searching workers to ensure we 
+        // see the most up-to-date count before deciding to wake another worker.
         if self.searching_workers.load(Ordering::Acquire) < 2 {
             let num_unparkers = self.unparkers.len();
             if num_unparkers > 0 {
+                // Use Relaxed for the notify cursor as it's just a round-robin 
+                // counter for load balancing and doesn't affect memory safety.
                 let idx = self.notify_cursor.fetch_add(1, Ordering::Relaxed) % num_unparkers;
                 self.unparkers[idx].unpark();
             }

@@ -38,7 +38,11 @@ impl<T: Any + Send + 'static> Future for JoinHandle<T> {
     type Output = Result<T, JoinError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // 1. Try to transition to JOINED
+        // 1. Try to transition to JOINED.
+        // We use AcqRel (Acquire-Release) to ensure:
+        // - Release: Any results written to `task.result` by the completing worker 
+        //   are visible to us before we take ownership.
+        // - Acquire: We see the state update from READY to JOINED.
         if self.task.join_state.compare_exchange(
             JOIN_STATE_READY,
             JOIN_STATE_JOINED,
@@ -55,7 +59,9 @@ impl<T: Any + Send + 'static> Future for JoinHandle<T> {
             }));
         }
 
-        // 2. If already joined or running, check state
+        // 2. If already joined or running, check state.
+        // Acquire ordering ensures we see the most up-to-date state of the task 
+        // before making a decision.
         let state = self.task.join_state.load(Ordering::Acquire);
         if state == JOIN_STATE_READY {
             // Re-poll to perform the transition safely with ownership Transfer
@@ -68,7 +74,8 @@ impl<T: Any + Send + 'static> Future for JoinHandle<T> {
         // 3. Register our waker
         self.task.join_waker.register(cx.waker());
 
-        // 4. Double-check state in case it finished during registration (to avoid lost wakeups)
+        // 4. Double-check state in case it finished during registration (to avoid lost wakeups).
+        // Again, Acquire ensures we see any result visibility if the state became READY.
         if self.task.join_state.load(Ordering::Acquire) == JOIN_STATE_READY {
             // Re-poll to perform the transition
             return self.poll(cx);

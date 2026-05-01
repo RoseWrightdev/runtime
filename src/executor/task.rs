@@ -113,7 +113,10 @@ impl Task {
             arc_self.join_waker.take();
             *arc_self.result.get() = None;
         }
+        // Use Relaxed for lifo_count as it's a heuristic for starvation prevention.
         arc_self.exec_state.lifo_count.store(0, Ordering::Relaxed);
+        // Use Release to ensure all re-initialization (above) is visible 
+        // to whatever worker next picks up this task.
         arc_self.join_state.store(JOIN_STATE_RUNNING, Ordering::Release);
         arc_self.exec_state.state.store(STATE_SCHEDULED, Ordering::Release);
     }
@@ -131,6 +134,8 @@ impl ArcWake for Task {
     }
 
     fn wake_by_ref(arc_self: &Arc<Self>) {
+        // Attempt to transition the task from IDLE (or other) to SCHEDULED.
+        // AcqRel ensures we see previous state changes and our change is visible.
         if arc_self.exec_state.state.swap(STATE_SCHEDULED, Ordering::AcqRel) == STATE_IDLE {
             // Only use the LIFO slot if we are on a worker thread that will check it.
             // This prevents "lost wakeups" where a task is stuck in a non-worker thread's LIFO slot.
@@ -140,6 +145,7 @@ impl ArcWake for Task {
                 // 1. Try LIFO slot (highest priority)
                 // If the task has been woken more than 3 times consecutively into the LIFO slot,
                 // bypass the slot and push it to the local deque to ensure other tasks aren't starved.
+                // Relaxed is sufficient here as this is a local heuristic.
                 if arc_self.exec_state.lifo_count.load(Ordering::Relaxed) < 3 {
                     pushed = context::LIFO_SLOT.with(|slot| {
                         let mut slot = slot.borrow_mut();
@@ -153,6 +159,7 @@ impl ArcWake for Task {
                 }
 
                 if pushed {
+                    // Relaxed: increment the local counter.
                     arc_self.exec_state.lifo_count.fetch_add(1, Ordering::Relaxed);
                 } else {
                     // 2. If LIFO is full or bypassed, try Local Queue (ZERO-OVERHEAD path)

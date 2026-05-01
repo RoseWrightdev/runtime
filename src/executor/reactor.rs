@@ -3,6 +3,8 @@ use std::task::Waker;
 use std::time::Instant;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::os::unix::io::{BorrowedFd, RawFd};
+
 use crossbeam::queue::SegQueue;
 use crossbeam::utils::CachePadded;
 use polling::{Events, Poller, Event, AsSource, AsRawSource};
@@ -134,6 +136,9 @@ impl Reactor {
 
     /// Wake up the reactor's poller wait loop.
     pub(crate) fn notify(&self) {
+        // Use SeqCst (Sequential Consistency) for the notification flag.
+        // This ensures a total global ordering of notifications, preventing 
+        // missed wake-ups when multiple threads are interacting with the poller.
         if !self.notified.swap(true, Ordering::SeqCst) {
             let _ = self.poller.notify();
         }
@@ -150,19 +155,25 @@ impl Reactor {
     /// 3. Dispatch wakers for all triggered I/O events and expired timers.
     pub(crate) fn try_poll(&self) -> bool {
         // Only one worker can be the Pollster at a time.
+        // Acquire ordering ensures that once we become the pollster, we see 
+        // any state changes made by the previous pollster (released via drop).
         if self.is_polling.swap(true, Ordering::Acquire) {
             return false;
         }
 
-        // Use a guard to ensure is_polling is reset even on panic
+        // Use a guard to ensure is_polling is reset even on panic.
         struct PollGuard<'a>(&'a AtomicBool);
         impl Drop for PollGuard<'_> {
             fn drop(&mut self) {
+                // Release ordering ensures all our reactor state changes are 
+                // visible to the next thread that acquires the pollster role.
                 self.0.store(false, Ordering::Release);
             }
         }
         let _guard = PollGuard(&self.is_polling);
 
+        // Check for shutdown signal. Acquire ensures we see the latest 
+        // shutdown state set by the Runtime.
         if self.shutdown.load(Ordering::Acquire) {
             return false;
         }
@@ -182,6 +193,8 @@ impl Reactor {
         // Release state lock so other workers can check or push
         drop(state);
 
+        // Reset notification flag before waiting. SeqCst ensures this reset 
+        // is visible globally before we enter the blocking kernel call.
         self.notified.store(false, Ordering::SeqCst);
         let _ = self.poller.wait(&mut events, timeout);
 
@@ -249,7 +262,7 @@ impl Reactor {
                             // registered with the poller. `borrow_raw` is used to create 
                             // a temporary reference for the duration of the `modify` call.
                             unsafe {
-                                let fd = std::os::unix::io::BorrowedFd::borrow_raw(key as std::os::unix::io::RawFd);
+                                let fd = BorrowedFd::borrow_raw(key as RawFd);
                                 let _ = self.poller.modify(fd, interest);
                             }
                         }

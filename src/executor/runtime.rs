@@ -124,7 +124,9 @@ impl Runtime {
 
 impl Drop for Runtime {
     fn drop(&mut self) {
-        // Signal shutdown
+        // Signal shutdown.
+        // Release ordering ensures that any final state changes made by the 
+        // main thread are visible to workers when they see the shutdown signal.
         self.handle.scheduler.shutdown.store(true, Ordering::Release);
         
         // Wake up workers
@@ -132,7 +134,8 @@ impl Drop for Runtime {
             unparker.unpark();
         }
         
-        // Wake up and join reactor
+        // Wake up and join reactor.
+        // Again, Release ensures workers see the shutdown signal.
         self.handle.reactor.shutdown.store(true, Ordering::Release);
         self.handle.reactor.notify();
 
