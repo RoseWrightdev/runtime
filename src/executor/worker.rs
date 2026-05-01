@@ -11,7 +11,7 @@ use futures::task::waker_ref;
 
 use crate::executor::{
     task::{STATE_IDLE, STATE_POLLING, STATE_SCHEDULED},
-    Handle, Scheduler, Task,
+    Handle, Scheduler, Task, stats,
 };
 
 /// The execution loop that runs on each background thread.
@@ -40,6 +40,10 @@ pub struct Worker {
     parker: Parker,
     /// Local random number generator for picking which worker to steal from.
     rng: u32,
+    /// Counter for consecutive LIFO polls.
+    lifo_count: u8,
+    /// Statistics for dynamic scheduler tuning.
+    stats: stats::Stats,
 }
 
 #[inline(always)]
@@ -64,6 +68,8 @@ impl Worker {
             budget: 128,
             parker,
             rng: (id as u32).wrapping_add(1),
+            lifo_count: 0,
+            stats: stats::Stats::new(),
         }
     }
 
@@ -93,8 +99,9 @@ impl Worker {
                 continue;
             }
 
-            // 3. If no local work, go look elsewhere or go to sleep
+            self.stats.end_batch();
             self.search_and_park();
+            self.stats.start_batch();
         }
 
         // Cleanup raw pointer on exit and restore the queue
@@ -124,19 +131,28 @@ impl Worker {
     /// Finds the next task to run, prioritizing local work for speed.
     fn next_local_task(&mut self, queue: &mut deque::Worker<Arc<Task>>) -> Option<Arc<Task>> {
         // 1. Check LIFO slot (highest priority, best cache locality)
-        let task = context::LIFO_SLOT.with(|slot| slot.borrow_mut().take());
-        if task.is_some() {
-            return task;
+        // We cap this at 3 consecutive polls to prevent starvation of other tasks.
+        if self.lifo_count < 3 {
+            let task = context::LIFO_SLOT.with(|slot| slot.borrow_mut().take());
+            if let Some(task) = task {
+                self.lifo_count += 1;
+                return Some(task);
+            }
         }
+
+        // Reset LIFO count if we pull from anywhere else.
+        self.lifo_count = 0;
 
         // 2. Pop from my own private local queue
         if let Some(task) = queue.pop() {
             return Some(task);
         }
 
-        // 3. Periodically check the global queue to make sure those tasks aren't forgotten
-        if self.tick % 61 == 0 {
-            if let Steal::Success(task) = self.handle.scheduler.steal() {
+        // 3. Periodically check the global queue to make sure those tasks aren't forgotten.
+        // We use batch stealing here to reduce atomic contention on the global injector.
+        // The interval is dynamically tuned based on task poll times.
+        if self.tick % self.stats.tuned_interval() as usize == 0 {
+            if let Steal::Success(task) = self.handle.scheduler.queue.steal_batch_and_pop(queue) {
                 return Some(task);
             }
         }
@@ -262,7 +278,7 @@ impl Worker {
             // SAFETY: `poll_fn` is a valid function pointer to the future's 
             // poll implementation, and `ptr` is a valid pointer to its state.
             let poll_result = unsafe { (future.poll_fn)(future.ptr, &mut cx) };
-
+            self.stats.record_poll();
             context::CURRENT_TASK.with(|c| *c.borrow_mut() = None);
 
             if let std::task::Poll::Ready(_) = poll_result {

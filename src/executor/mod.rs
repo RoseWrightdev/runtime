@@ -34,6 +34,7 @@ pub mod context;
 pub mod handle;
 pub mod reactor;
 pub mod join_handle;
+pub(crate) mod stats;
 
 
 // Re-export only what the rest of the crate needs

@@ -24,12 +24,13 @@ use crate::executor::context::{CURRENT_TASK, LOCAL_TASK_POOL};
 /// 
 /// Taiga implements a multi-level task discovery hierarchy:
 /// 
-/// 1.  **LIFO Slot**: A single-task priority slot for tasks woken by the 
-///     current thread. This maximizes CPU cache locality.
+/// 1.  **LIFO Slot**: A high-priority slot for tasks woken by the current 
+///     thread. To prevent starvation, this is capped at 3 consecutive polls.
 /// 2.  **Local Deque**: A per-worker lock-free deque for low-latency local 
 ///     task management.
-/// 3.  **Work-Stealing**: A mechanism to migrate tasks from over-subscribed 
-///     local deques or the global injector queue to idle workers.
+/// 3.  **Work-Stealing**: A mechanism to migrate tasks from other workers 
+///     or the global injector. Global queue checks use batch stealing to 
+///     reduce contention at high concurrency.
 /// 
 /// ## Resource Recycling
 /// 
