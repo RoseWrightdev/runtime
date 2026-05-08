@@ -146,6 +146,12 @@ impl Drop for Runtime {
     }
 }
 
+impl Default for Runtime {
+    fn default() -> Self { 
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
