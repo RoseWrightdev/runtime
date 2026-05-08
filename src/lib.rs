@@ -1,3 +1,5 @@
+#![warn(clippy::pedantic)]
+
 //! # Taiga Runtime
 //! 
 //! Taiga is a high-performance, asynchronous runtime for Rust, designed to be both 
