@@ -153,11 +153,9 @@ impl Scheduler {
         }
         
         // 3. If no poolable task found, create a new one from scratch
-        let pooled_layout = if let Some(idx) = Self::pool_index(layout) {
-             Some(Layout::from_size_align(32 << idx, 16).unwrap())
-        } else {
-             None
-        };
+        let pooled_layout = Self::pool_index(layout).map(
+            |idx| Layout::from_size_align(32 << idx, 16).unwrap()
+        );;
 
         let task = Task::new(future, self.clone(), pooled_layout);
         self.inject(task.clone());
