@@ -1,6 +1,6 @@
 # Async Runtime
 
-A minimal, high-performance asynchronous runtime in Rust implementing a work-stealing executor and epoll-based reactor. It provides significant performance gains over Tokio at 250 conncurent connections through a greedy scheduler that prioritizes cache locality, lock-free synchronization, and aggressive task recycling.
+A minimal, high-performance asynchronous runtime in Rust implementing a work-stealing executor and epoll-based reactor. It provides significant performance gains over Tokio at 250 conncurent connections through a greedy scheduler that prioritizes cache locality, lock-free synchronization, and aggressive task recycling. This is a toy project made for fun.
 
 Async Rust blog post: [From Futures to Runtimes: How Async Rust Actually Works](https://dev.to/rosewrightdev/from-futures-to-runtimes-how-async-rust-actually-works-4gec)
 
